@@ -4,3 +4,8 @@ env/
 # Archivos de caché de Python
 __pycache__/
 *.pyc
+
+chrome_dev_session
+
+.env
+.env.local  
