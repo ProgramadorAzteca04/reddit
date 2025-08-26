@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     # === Vars de tu proyecto ===
     DATABASE_URL: str
+    SECOND_DATABASE_URL: str
     REDDIT_SCREENSHOTS_DIR: str = "img"
     DEBUG: bool = False
 
