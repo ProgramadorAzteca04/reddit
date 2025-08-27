@@ -149,6 +149,9 @@ class RedditInteractionService:
             self.driver.execute_script("document.getElementById('logout-list-item').click();")
             time.sleep(3)
             print("✅ Cierre de sesión completado exitosamente.")
+            print("   -> Cerrando la ventana del navegador con Ctrl+W...")
+            pyautogui.hotkey('ctrl', 'w')
+            time.sleep(1) # Pequeña pausa para que la ventana se cierre
         except Exception as e:
             print(f"🚨 Error durante el cierre de sesión: {e}")
 
@@ -180,6 +183,10 @@ class RedditInteractionService:
             time.sleep(3)
             
             print("✅ Modo oscuro activado y cierre de sesión completado.")
+
+            print("   -> Cerrando la ventana del navegador con Ctrl+W...")
+            pyautogui.hotkey('ctrl', 'w')
+            time.sleep(1) # Pequeña pausa para que la ventana se cierre
         except Exception as e:
             print(f"🚨 Error durante el logout especial: {e}")
             # Si algo falla, intenta un logout normal como fallback

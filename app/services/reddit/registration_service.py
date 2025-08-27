@@ -18,7 +18,8 @@ def run_registration_flow(email: str, url: str):
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     DEBUGGING_PORT = "9223"
     WINDOW_TITLE = "Reddit" # Título de la ventana para enfocarla
-    browser_manager = BrowserManager(CHROME_PATH, "", DEBUGGING_PORT)
+    USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_registration_session")
+    browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT)
     pyautogui_service = PyAutoGuiService()
     
     username = ""
@@ -28,7 +29,7 @@ def run_registration_flow(email: str, url: str):
     try:
         # 1. Abrir el navegador y conectar Selenium INMEDIATAMENTE
         browser_manager.open_chrome_with_debugging(url)
-        time.sleep(5)
+        time.sleep(15)
         
         # Enfocar la ventana para que PyAutoGUI funcione correctamente
         if not DesktopUtils.get_and_focus_window(WINDOW_TITLE):

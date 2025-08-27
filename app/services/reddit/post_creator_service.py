@@ -13,6 +13,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from app.models.reddit_models import Post, Credential
 # --- Importaciones para la Base de Datos ---
 from app.db.database import get_db_secondary
 from app.models.reddit_models import Post
@@ -68,7 +69,7 @@ def _user_prefixed(username: str) -> str:
     return "u/" + u
 
 # --- Función Principal del Servicio ---
-def execute_create_post_flow(username: str = "", password: str = "", topic: str = "Beneficios de la IA en la vida diaria") -> dict:
+def execute_create_post_flow(credential_id: int) -> dict:
     """
     Orquesta el flujo completo: genera contenido, inicia sesión, publica en Reddit y guarda en la BD.
     """
@@ -76,9 +77,22 @@ def execute_create_post_flow(username: str = "", password: str = "", topic: str 
     print("🚀 INICIANDO SERVICIO: Flujo completo para crear y publicar en Reddit.")
     print("="*60)
 
-    # Paso 0: Generar Contenido
-    print(f"   -> Generando contenido para el tema: '{topic}'...")
-    generated_content = generate_post_content(topic)
+    db = next(get_db_secondary())
+    try:
+        credential = db.query(Credential).filter(Credential.id == credential_id).first()
+        if not credential:
+            raise ValueError(f"No se encontró ninguna credencial con el ID: {credential_id}")
+        
+        username = credential.username
+        password = credential.password
+        print(f"   -> Credenciales encontradas para el usuario: '{username}' (ID: {credential_id})")
+
+    finally:
+        db.close()
+    
+    # Paso 0: Generar Contenido (ahora sin pasarle un tema)
+    print("   -> Generando contenido con tema automático...")
+    generated_content = generate_post_content()
     if "Error" in generated_content["title"]:
         error_msg = f"No se pudo generar contenido de OpenAI: {generated_content['body']}"
         return {"status": "error", "message": error_msg}
@@ -103,7 +117,8 @@ def execute_create_post_flow(username: str = "", password: str = "", topic: str 
             raise RuntimeError("El proceso de login falló. No se puede continuar.")
         
         print(f"   -> Login completado exitosamente como '{username}'.")
-        interaction_service = RedditInteractionService(driver)
+        interaction_service = RedditInteractionService(driver, username)
+        
         interaction_service.prepare_page()
         time.sleep(3)
 

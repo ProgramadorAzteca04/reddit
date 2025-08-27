@@ -19,19 +19,20 @@ class BrowserManager:
     def _launch_chrome(self, command: list):
         """Lanza una instancia de Chrome con la configuración especificada."""
         try:
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 3  # SW_MAXIMIZE
-            subprocess.Popen(command, startupinfo=startupinfo)
+            # Simplificamos a un Popen estándar. Es más confiable y predecible.
+            # La maximización y el enfoque se harán explícitamente después.
+            subprocess.Popen(command)
         except FileNotFoundError:
             raise HTTPException(status_code=500, detail=f"No se encontró Chrome en: {self.chrome_path}")
-        except AttributeError:
-            print("⚠️ 'startupinfo' no es compatible en este SO. Usando método estándar.")
+        except Exception as e:
+            # Captura de otros posibles errores en diferentes SO.
+            print(f"⚠️ No se pudo lanzar Chrome con el método estándar: {e}")
             subprocess.Popen(command)
 
     def open_chrome_with_debugging(self, url: str) -> None:
         """Abre Chrome con el puerto de depuración remoto activado."""
-        command = [self.chrome_path, f"--remote-debugging-port={self.port}", f"--user-data-dir={self.user_data_dir}", "--start-maximized", url]
+        # Eliminamos el argumento --start-maximized para evitar conflictos.
+        command = [self.chrome_path, f"--remote-debugging-port={self.port}", f"--user-data-dir={self.user_data_dir}", url]
         self._launch_chrome(command)
         print(f"🌐 Chrome (Debug) abierto en el puerto {self.port}")
 

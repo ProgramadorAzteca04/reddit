@@ -24,3 +24,6 @@ class MultiLoginRequest(BaseModel):
     url: str = Field("https://www.reddit.com/login", description="URL de login para todas las cuentas.")
     window_title: str = Field("Reddit", description="Título de la ventana para PyAutoGUI.")
     interaction_minutes: int = Field(5, description="Duración de la interacción por cada cuenta.")
+
+class CreatePostRequest(BaseModel):
+    credential_id: int = Field(..., description="ID de la credencial a utilizar para crear el post.")

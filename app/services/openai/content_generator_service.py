@@ -8,53 +8,77 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Inicializa el cliente de OpenAI con la clave de la API
-# Asegúrate de tener un archivo .env en la misma carpeta con tu clave:
-# OPENAI_API_KEY='tu-clave-aqui'
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 if not client.api_key:
     raise ValueError("No se encontró la API key de OpenAI. Asegúrate de crear un archivo .env con OPENAI_API_KEY='tu-clave'")
 
+def _generate_random_topic(client: OpenAI) -> str:
+    """
+    Llama a la IA para generar un único tema de debate interesante,
+    evitando explícitamente temas de tecnología e IA.
+    """
+    print("   -> 🧠 Solicitando un nuevo tema a la IA...")
+    try:
+        prompt_tema = """
+        Genera un único tema de debate interesante y atractivo para una publicación en un foro como Reddit.
+        El tema debe ser de interés general, invitar a la opinión y ser controversial pero no ofensivo.
+        
+        IMPORTANTE: No generes temas sobre inteligencia artificial, machine learning, programación,
+        tecnología, criptomonedas o cualquier tema técnico relacionado.
+        
+        Ejemplos de buenos temas:
+        - ¿La piña en la pizza es un crimen o una genialidad?
+        - Cuál es la película más infravalorada que has visto y por qué.
+        - Pequeños hábitos diarios que pueden mejorar tu vida radicalmente.
+        
+        Responde únicamente con la frase del tema, sin comillas ni texto adicional.
+        """
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt_tema}],
+            temperature=0.8,
+            max_tokens=50,
+        )
+        topic = response.choices[0].message.content.strip()
+        print(f"   -> ✅ Tema recibido: '{topic}'")
+        return topic
+    except Exception as e:
+        print(f"   -> 🚨 Error al generar tema: {e}")
+        # En caso de error, devolvemos un tema seguro por defecto
+        return "cuál es el mejor consejo financiero que has recibido"
 
-def generate_post_content(topic: str, model: str = "gpt-3.5-turbo", temperature: float = 0.75) -> dict:
+def generate_post_content(model: str = "gpt-3.5-turbo", temperature: float = 0.75) -> dict:
     """
-    Genera contenido para Reddit con un estilo más espontáneo y humano.
-    Si el tema es sobre IA, lo reemplaza automáticamente por uno de una lista segura.
+    Genera contenido para Reddit de forma autónoma: primero genera un tema
+    y luego crea una publicación sobre él, evitando siempre temas de IA.
     """
-    # 1. FILTRO DE TEMAS Y REEMPLAZO AUTOMÁTICO
-    # Lista de palabras clave prohibidas (en minúsculas)
+    # 1. FILTRO DE TEMAS Y VALIDACIÓN
     FORBIDDEN_KEYWORDS = [
         'ia', 'inteligencia artificial', 'ai', 'machine learning',
         'aprendizaje automático', 'deep learning', 'llm', 'gpt',
         'chatgpt', 'gemini', 'claude', 'modelos de lenguaje', 'redes neuronales',
-        'prompt engineering'
+        'prompt engineering', 'programación', 'software', 'código'
     ]
     
-    # Lista de temas alternativos seguros para reemplazar los temas bloqueados
-    SAFE_TOPICS = [
-        "consejos para ser más productivo cada día",
-        "cuál es la película más infravalorada que has visto y por qué",
-        "los beneficios de leer libros que nadie suele mencionar",
-        "cómo empezar a aprender un nuevo idioma de forma autodidacta",
-        "destinos de viaje baratos que realmente valen la pena",
-        "la importancia de la salud mental en el entorno laboral actual",
-        "recetas de cocina increíblemente fáciles para gente ocupada",
-        "el eterno debate: ¿la piña en la pizza es un crimen o una genialidad?",
-        "pequeños hábitos diarios que pueden mejorar tu vida radicalmente",
-        "cuál es el mejor consejo financiero que has recibido"
-    ]
-
-    # Comprueba si el tema contiene alguna palabra clave prohibida
-    lower_topic = topic.lower()
-    for keyword in FORBIDDEN_KEYWORDS:
-        if keyword in lower_topic:
-            print(f"\n🚨 TEMA BLOQUEADO: El tema '{topic}' contiene la palabra clave prohibida '{keyword}'.")
-            new_topic = random.choice(SAFE_TOPICS)
-            print(f"   -> 🔄 Seleccionando un tema alternativo de la lista segura: '{new_topic}'")
-            topic = new_topic  # Reemplaza el tema original por el nuevo
-            break  # Sale del bucle una vez que se encuentra una coincidencia
+    topic = ""
+    for attempt in range(3): # Intentamos 3 veces obtener un tema seguro
+        generated_topic = _generate_random_topic(client)
+        lower_topic = generated_topic.lower()
+        
+        is_safe = not any(keyword in lower_topic for keyword in FORBIDDEN_KEYWORDS)
+        
+        if is_safe:
+            topic = generated_topic
+            break
+        else:
+            print(f"   -> ⚠️ TEMA DESCARTADO: '{generated_topic}' contiene una palabra clave prohibida. Reintentando...")
+    
+    if not topic:
+        print("   -> 🛑 No se pudo generar un tema seguro. Usando un tema por defecto.")
+        topic = "La importancia de desconectar de la tecnología un día a la semana"
 
     print("\n" + "="*60)
-    print(f"🤖 GENERANDO CONTENIDO PARA EL TEMA: '{topic}'")
+    print(f"🤖 GENERANDO CONTENIDO PARA EL TEMA FINAL: '{topic}'")
     print("="*60)
     
     # 2. OBTENER Y FORMATEAR LA FECHA ACTUAL PARA DAR CONTEXTO
@@ -86,7 +110,6 @@ def generate_post_content(topic: str, model: str = "gpt-3.5-turbo", temperature:
         "redactar el cuerpo como si estuvieras pensando en voz alta, usando frases cortas y directas",
         "finalizar el post con una pregunta directa y abierta a la comunidad para fomentar la conversación"
     ]
-    # NUEVO: Selección aleatoria de la longitud del post
     post_lengths = [
         "muy corto y directo, de una o dos frases",
         "de un párrafo de tamaño medio, desarrollando un poco la idea",
@@ -111,7 +134,7 @@ def generate_post_content(topic: str, model: str = "gpt-3.5-turbo", temperature:
         """
         print("   -> Se solicitará un sutil error intencional.")
 
-    # 5. CONSTRUCCIÓN DEL PROMPT FINAL PARA LA IA (MODIFICADO)
+    # 5. CONSTRUCCIÓN DEL PROMPT FINAL PARA LA IA
     prompt = f"""
     Eres un redactor de contenido experto en crear publicaciones para Reddit que se sienten auténticas y humanas.
     Tu objetivo es evitar sonar como una IA. Escribe de forma natural, directa y como lo haría una persona real en un foro.
@@ -163,28 +186,3 @@ def generate_post_content(topic: str, model: str = "gpt-3.5-turbo", temperature:
     except Exception as e:
         print(f"\n🚨 ERROR FATAL al generar contenido con OpenAI: {e}")
         return {"title": "Error de Generación", "body": f"No se pudo generar el contenido: {e}"}
-
-# --- Bloque de ejecución de ejemplo ---
-# Este código solo se ejecuta cuando corres el archivo directamente
-if __name__ == "__main__":
-    # Prueba 1: Un tema que será bloqueado para ver el reemplazo en acción
-    tema_bloqueado = "Beneficios de la IA en la vida diaria"
-    print(f"--- Prueba 1: Intentando generar contenido para un tema bloqueado: '{tema_bloqueado}' ---")
-    contenido_generado_1 = generate_post_content(tema_bloqueado)
-
-    if contenido_generado_1:
-        print("\n--- RESULTADO FINAL 1 (con tema reemplazado) ---")
-        print(f"Título: {contenido_generado_1['title']}")
-        print(f"Cuerpo: {contenido_generado_1['body']}")
-        print("-----------------\n")
-
-    # Prueba 2: Un tema permitido para ver el funcionamiento normal
-    tema_permitido = "La importancia de desconectar de la tecnología un día a la semana"
-    print(f"--- Prueba 2: Intentando generar contenido para un tema permitido: '{tema_permitido}' ---")
-    contenido_generado_2 = generate_post_content(tema_permitido)
-
-    if contenido_generado_2:
-        print("\n--- RESULTADO FINAL 2 (normal) ---")
-        print(f"Título: {contenido_generado_2['title']}")
-        print(f"Cuerpo: {contenido_generado_2['body']}")
-        print("-----------------\n")
