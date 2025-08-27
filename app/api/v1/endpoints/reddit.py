@@ -33,7 +33,8 @@ async def start_login(request: LoginRequest, background_tasks: BackgroundTasks):
         credential_id=request.credential_id, # <-- Pasa el ID
         url=request.url,
         window_title=request.window_title,
-        interaction_minutes=request.interaction_minutes
+        interaction_minutes=request.interaction_minutes,
+        upvote_from_database_enabled=request.upvote_from_database_enabled
     )
     return {"message": "El proceso de login y navegación ha comenzado en segundo plano."}
 
@@ -63,7 +64,8 @@ async def start_multi_login(request: MultiLoginRequest, background_tasks: Backgr
         account_ids=request.account_ids, # <-- Pasa la lista de IDs
         url=request.url,
         window_title=request.window_title,
-        interaction_minutes=request.interaction_minutes
+        interaction_minutes=request.interaction_minutes,
+        upvote_from_database_enabled=request.upvote_from_database_enabled
     )
     return {"message": "El proceso de login múltiple ha comenzado en segundo plano."}
 

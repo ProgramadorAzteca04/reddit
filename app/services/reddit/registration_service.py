@@ -18,7 +18,7 @@ def run_registration_flow(email: str, url: str):
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     DEBUGGING_PORT = "9223"
     WINDOW_TITLE = "Reddit" # Título de la ventana para enfocarla
-    USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_registration_session")
+    USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
     browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT)
     pyautogui_service = PyAutoGuiService()
     

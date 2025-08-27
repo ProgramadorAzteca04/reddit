@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 
 chrome_dev_session
+chrome_login_session
 chrome_registration_session
 
 .env

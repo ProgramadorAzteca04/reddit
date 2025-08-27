@@ -1,4 +1,3 @@
-# app/services/reddit/login_service.py
 import time
 import os
 import traceback
@@ -21,12 +20,22 @@ def perform_login_and_setup(username: str, password: str, url: str, window_title
     pyautogui_service = PyAutoGuiService()
 
     try:
+        # 1. Abrir el navegador y esperar (igual que en registration_service)
         browser_manager.open_chrome_with_debugging(url)
-        time.sleep(5)
+        time.sleep(15)
 
+        # 2. Enfocar la ventana (igual que en registration_service)
         if not DesktopUtils.get_and_focus_window(window_title):
             raise RuntimeError("No se pudo encontrar y enfocar la ventana del navegador.")
 
+        # 3. Conectar Selenium INMEDIATAMENTE (igual que en registration_service)
+        print("   -> 🔗 Conectando Selenium al navegador...")
+        driver = browser_manager.connect_to_browser()
+        if not driver:
+            raise ConnectionError("No se pudo conectar Selenium al inicio del proceso.")
+        print("   -> ✅ Selenium conectado exitosamente.")
+
+        # 4. Iniciar proceso de login con PyAutoGUI (ahora con Selenium ya conectado)
         print("\n--- Iniciando Proceso de Login con PyAutoGUI---")
         
         # Ingresar nombre de usuario
@@ -48,10 +57,6 @@ def perform_login_and_setup(username: str, password: str, url: str, window_title
         
         print("✅ Login con PyAutoGUI completado.")
         
-        driver = browser_manager.connect_to_browser()
-        if not driver:
-            raise ConnectionError("No se pudo conectar Selenium al navegador.")
-        
         return driver, browser_manager
 
     except Exception as e:
@@ -62,16 +67,14 @@ def perform_login_and_setup(username: str, password: str, url: str, window_title
             browser_manager.quit_driver()
         return None, None
 
-def run_interaction_loop(service: RedditInteractionService, duration_minutes: int):
+def run_interaction_loop(service: RedditInteractionService, duration_minutes: int, upvote_from_database_enabled: bool):
     """
-    Ejecuta un bucle de interacciones aleatorias, con upvote_from_database 
-    ejecutándose como máximo una vez.
+    Ejecuta un bucle de interacciones aleatorias, con upvote_from_database
+    ejecutándose como máximo una vez si está habilitado.
     """
     start_time = time.time()
     
     interacted_post_ids_this_session = set()
-    # --- NUEVO FLAG ---
-    # Este flag controlará si la acción ya se realizó en esta sesión.
     upvote_from_db_has_run = False
 
     action_map = {
@@ -81,7 +84,13 @@ def run_interaction_loop(service: RedditInteractionService, duration_minutes: in
         "upvote_from_database": lambda: service.upvote_from_database(interacted_post_ids_this_session)
     }
     
-    action_pool = ["scroll_page"] * 5 + ["like_random_post"] * 2 + ["upvote_from_database"] * 3
+    action_pool = ["scroll_page"] * 5 + ["like_random_post"] * 2
+
+    if upvote_from_database_enabled:
+        action_pool += ["upvote_from_database"] * 3
+        print("   -> Interacción 'upvote_from_database' HABILITADA.")
+    else:
+        print("   -> Interacción 'upvote_from_database' DESHABILITADA.")
     
     print("\n" + "="*50)
     print(f"🤖 INICIANDO NAVEGACIÓN DINÁMICA para '{service.username}' 🤖")
@@ -161,7 +170,7 @@ def run_login_flow(
         driver, browser_manager = perform_login_and_setup(username, password, url, window_title)
         if driver and browser_manager:
             interaction_service = RedditInteractionService(driver, username)
-            run_interaction_loop(interaction_service, interaction_minutes)
+            run_interaction_loop(interaction_service, interaction_minutes, upvote_from_database_enabled)
     except Exception as e:
         print(f"\n🚨 ERROR FATAL en el flujo principal para '{username}': {e}")
         traceback.print_exc()
