@@ -13,10 +13,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+# --- Importaciones para la Base de Datos ---
+from app.db.database import get_db_secondary
+from app.models.reddit_models import Post
 
-
-# 2. COMANDOS JAVASCRIPT
-# ----------------------
+# --- Comandos Javascript (sin cambios) ---
 CLICK_CREATE_POST_JS = """
 const el = document.getElementById('create-post');
 if (el) {
@@ -28,8 +29,6 @@ if (el) {
   return 'ERROR: No se encontró el elemento con ID "create-post".';
 }
 """
-
-# === ESCRITURA DEL TÍTULO (parametrizado) ===
 TITLE_FILL_JS = """
 const titleValue = arguments[0];
 const hostTitulo = document.querySelector('faceplate-textarea-input[name="title"]');
@@ -44,7 +43,6 @@ textareaTitulo.dispatchEvent(new Event('change', { bubbles: true }));
 textareaTitulo.focus();
 return 'OK';
 """
-# === ESCRITURA DEL CUERPO (parametrizado) ===
 BODY_FILL_JS = """
 const bodyText = arguments[0];
 const editor = document.querySelector('div[contenteditable="true"][name="body"]');
@@ -69,46 +67,37 @@ def _user_prefixed(username: str) -> str:
         return "u/" + u.split("/", 1)[1]
     return "u/" + u
 
-# 3. FUNCIÓN DE SERVICIO
-# ----------------------
+# --- Función Principal del Servicio ---
 def execute_create_post_flow(username: str = "", password: str = "", topic: str = "Beneficios de la IA en la vida diaria") -> dict:
     """
-    Orquesta el flujo completo: genera contenido sobre un tema, inicia sesión en Reddit
-    y prepara una publicación con el contenido generado.
+    Orquesta el flujo completo: genera contenido, inicia sesión, publica en Reddit y guarda en la BD.
     """
     print("\n" + "="*60)
     print("🚀 INICIANDO SERVICIO: Flujo completo para crear y publicar en Reddit.")
     print("="*60)
 
-    # ================================================================
-    # PASO 0: GENERAR CONTENIDO CON OPENAI
-    # ================================================================
+    # Paso 0: Generar Contenido
     print(f"   -> Generando contenido para el tema: '{topic}'...")
     generated_content = generate_post_content(topic)
-
     if "Error" in generated_content["title"]:
         error_msg = f"No se pudo generar contenido de OpenAI: {generated_content['body']}"
-        print(f"   -> 🚨 {error_msg}")
         return {"status": "error", "message": error_msg}
-
     title = generated_content["title"]
     body = generated_content["body"]
     print("   -> ✅ Contenido generado exitosamente.")
 
+    # Inicialización de servicios
     LOGIN_URL = "https://www.reddit.com/login"
     WINDOW_TITLE = "Reddit"
-    
     interaction_service: Optional[RedditInteractionService] = None
     browser_manager = None
     pyautogui_service = PyAutoGuiService()
-
+    
     try:
         if not password:
             raise ValueError("El parámetro 'password' es obligatorio para iniciar sesión.")
 
-        # ================================================================
-        # PASO 1: LOGIN Y PREPARACIÓN
-        # ================================================================
+        # Paso 1: Login y Preparación
         driver, browser_manager = perform_login_and_setup(username, password, LOGIN_URL, WINDOW_TITLE)
         if not driver or not browser_manager:
             raise RuntimeError("El proceso de login falló. No se puede continuar.")
@@ -118,9 +107,7 @@ def execute_create_post_flow(username: str = "", password: str = "", topic: str 
         interaction_service.prepare_page()
         time.sleep(3)
 
-        # ================================================================
-        # PASO 2: ABRIR EL EDITOR DE PUBLICACIONES
-        # ================================================================
+        # Paso 2: Abrir el Editor de Publicaciones
         print("   -> Ejecutando script para hacer clic en 'Crear publicación'...")
         result = driver.execute_script(CLICK_CREATE_POST_JS)
         print(f"   -> Resultado del script: {result}")
@@ -128,113 +115,97 @@ def execute_create_post_flow(username: str = "", password: str = "", topic: str 
             return {"status": "error", "message": result}
         time.sleep(5)
 
-        # ================================================================
-        # PASO 3: SELECCIONAR LA COMUNIDAD (EL PERFIL DEL USUARIO)
-        # ================================================================
+        # Paso 3: Seleccionar Comunidad (Perfil del Usuario)
         print("   -> Buscando el botón para seleccionar comunidad con PyAutoGUI...")
         community_images = ["select_community.png"]
         if not pyautogui_service.find_and_click_humanly(community_images, confidence=0.8, attempts=3, wait_time=2):
-            error_msg = "PyAutoGUI no pudo encontrar el botón 'select_community.png'."
-            print(f"   -> 🚨 {error_msg}")
-            return {"status": "error", "message": error_msg}
+            return {"status": "error", "message": "No se pudo encontrar 'select_community.png'."}
         
-        print("   -> ✅ Clic inicial con PyAutoGUI exitoso.")
         time.sleep(1.5)
         target_profile = _user_prefixed(username)
-        print(f"   -> Escribiendo '{target_profile}' con PyAutoGUI...")
         pyautogui.write(target_profile, interval=0.1)
         time.sleep(2)
         
         try:
-            print("   -> Usando Selenium para enviar teclas al elemento activo...")
             active_element = driver.switch_to.active_element
-            print("   -> Presionando 'Flecha Abajo' con Selenium...")
             active_element.send_keys(Keys.ARROW_DOWN)
             time.sleep(1.5)
-            print("   -> Presionando 'Enter' con Selenium...")
             active_element.send_keys(Keys.ENTER)
             print("   -> ✅ Comunidad seleccionada exitosamente.")
         except Exception as e:
-            error_msg = f"Selenium no pudo enviar las teclas de acción. Error: {e}"
-            print(f"   -> 🚨 {error_msg}")
-            traceback.print_exc()
-            return {"status": "error", "message": error_msg}
+            raise RuntimeError(f"Selenium no pudo enviar las teclas de acción. Error: {e}")
         
-        # ================================================================
-        # PASO 4 Y 5: ESCRIBIR TÍTULO Y CUERPO
-        # ================================================================
+        # Pasos 4 y 5: Escribir Título y Cuerpo
         time.sleep(1.6)
         print(f"   -> Escribiendo el título: '{title}'...")
-        result_title = driver.execute_script(TITLE_FILL_JS, title)
-        print(f"   -> Resultado del script del título: {result_title}")
-        if result_title != 'OK':
-            error_msg = f"No se pudo escribir en el campo del título. Script devolvió: {result_title}"
-            return {"status": "error", "message": error_msg}
+        if driver.execute_script(TITLE_FILL_JS, title) != 'OK':
+            raise RuntimeError("No se pudo escribir en el campo del título.")
         
         print("   -> ✅ Título escrito correctamente.")
-        print(f"   -> Escribiendo en el cuerpo del post...")
-        driver.execute_script(BODY_FILL_JS, body)
-        time.sleep(0.5)
-        result_body = driver.execute_script(BODY_FILL_JS, body) # Segundo intento para robustez
-        if result_body != 'OK':
-            error_msg = f"No se pudo escribir en el cuerpo del post. Script devolvió: {result_body}"
-            return {"status": "error", "message": error_msg}
-
+        if driver.execute_script(BODY_FILL_JS, body) != 'OK':
+            # Segundo intento para robustez
+            time.sleep(0.5)
+            if driver.execute_script(BODY_FILL_JS, body) != 'OK':
+                raise RuntimeError("No se pudo escribir en el cuerpo del post.")
         print("   -> ✅ Cuerpo del post escrito correctamente.")
         
-        # ================================================================
-        # PASO 6: PUBLICAR EL POST
-        # ================================================================
+        # Paso 6: Publicar
         time.sleep(3)
-        print("   -> Buscando el botón para publicar el post con PyAutoGUI...")
-        publish_images = ["publicar.png"]
-        if not pyautogui_service.find_and_click_humanly(publish_images, confidence=0.8, attempts=3, wait_time=2):
-            error_msg = "No se pudo encontrar el botón 'publicar.png' en la pantalla."
-            print(f"   -> 🚨 {error_msg}")
-            return {"status": "error", "message": error_msg}
+        if not pyautogui_service.find_and_click_humanly(["publicar.png"], confidence=0.8):
+            raise RuntimeError("No se pudo encontrar el botón 'publicar.png'.")
         print("   -> ✅ ¡Post publicado exitosamente!")
         
-        # ================================================================
-        # PASO 7: OBTENER URL DE CONFIRMACIÓN
-        # ================================================================
+        # Paso 7: Obtener URL y Guardar en la Base de Datos
         print("   -> ⏳ Esperando que cargue la primera publicación del feed...")
         try:
             wait = WebDriverWait(driver, 20)
-            first_post_element = wait.until(
-                EC.visibility_of_element_located((By.CSS_SELECTOR, "shreddit-post"))
-            )
+            post_element = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "shreddit-post")))
             
-            permalink = first_post_element.get_attribute("permalink")
+            permalink = post_element.get_attribute("permalink")
             post_url = f"https://www.reddit.com{permalink}"
             
             print(f"   -> ✅ ¡Primera publicación encontrada!")
             print(f"   -> 🔗 URL de la publicación capturada: {post_url}")
 
             if "/comments/" in post_url:
-                return {
-                    "status": "success",
-                    "message": f"Post para '{target_profile}' publicado y verificado exitosamente.",
-                    "post_url": post_url
-                }
+                # --- LÓGICA DE GUARDADO CORREGIDA ---
+                print("\n--- Guardando post en la base de datos ---")
+                db = next(get_db_secondary())
+                try:
+                    # Corrección: El ID del post está en la posición 4 cuando se publica en un perfil.
+                    path_parts = permalink.strip('/').split('/')
+                    # path_parts: ['user', 'Username', 'comments', 'post_id', 'title']
+                    # o ['r', 'subreddit', 'comments', 'post_id', 'title']
+                    post_id = path_parts[3] if path_parts[2] == 'comments' else path_parts[4]
+
+                    print(f"   -> ID del Post extraído: {post_id}")
+                    
+                    db_post = Post(
+                        id=post_id,
+                        title=title,
+                        subreddit=target_profile,
+                        author=username,
+                        post_url=post_url,
+                    )
+                    
+                    db.add(db_post)
+                    db.commit()
+                    print("   -> ✅ Post guardado exitosamente en la base de datos.")
+                except Exception as db_error:
+                    print(f"   -> 🚨 ERROR al guardar en la base de datos: {db_error}")
+                    db.rollback()
+                finally:
+                    db.close()
+                # -----------------------------------------------
+
+                return {"status": "success", "message": "Post publicado y guardado.", "post_url": post_url}
             else:
-                raise Exception("El permalink extraído no parece ser una URL de publicación válida.")
+                raise ValueError("El permalink no parece ser una URL de post válida.")
 
         except TimeoutException:
-            error_msg = "El post fue publicado, pero no se encontró ninguna publicación en el feed para obtener la URL. La página tardó demasiado en cargar o está vacía."
-            print(f"   -> 🚨 {error_msg}")
-            return {
-                "status": "success_with_warning",
-                "message": error_msg,
-                "post_url": driver.current_url
-            }
+            return {"status": "success_with_warning", "message": "Post publicado, pero no se pudo verificar la URL."}
         except Exception as e:
-            error_msg = f"Ocurrió un error inesperado al intentar extraer la URL: {e}"
-            print(f"   -> 🚨 {error_msg}")
-            return {
-                "status": "error",
-                "message": error_msg,
-                "post_url": driver.current_url
-            }
+            return {"status": "error", "message": f"Error verificando la URL o guardando en BD: {e}"}
 
     except Exception as e:
         print(f"\n🚨 ERROR FATAL en el servicio de crear post: {e}")

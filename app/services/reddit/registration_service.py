@@ -4,113 +4,124 @@ import os
 import traceback
 import pyperclip
 import pyautogui
-from .desktop_service import PyAutoGuiService, HumanInteractionUtils
+from .desktop_service import PyAutoGuiService, HumanInteractionUtils, DesktopUtils
 from .browser_service import BrowserManager
 from app.services.email_reader_service import get_latest_verification_code
+from app.db.database import get_db_secondary
+from app.models.reddit_models import Credential
+from .interaction_service import RedditInteractionService
 
 def run_registration_flow(email: str, url: str):
-    """Flujo principal que orquesta el registro de una nueva cuenta."""
+    """
+    Flujo principal que orquesta el registro, guarda credenciales y finaliza la sesión.
+    """
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-    browser_manager = BrowserManager(CHROME_PATH, "", "")
+    DEBUGGING_PORT = "9223"
+    WINDOW_TITLE = "Reddit" # Título de la ventana para enfocarla
+    browser_manager = BrowserManager(CHROME_PATH, "", DEBUGGING_PORT)
     pyautogui_service = PyAutoGuiService()
+    
+    username = ""
+    driver = None
+    registration_successful = False
 
     try:
-        browser_manager.open_chrome_incognito(url)
+        # 1. Abrir el navegador y conectar Selenium INMEDIATAMENTE
+        browser_manager.open_chrome_with_debugging(url)
         time.sleep(5)
+        
+        # Enfocar la ventana para que PyAutoGUI funcione correctamente
+        if not DesktopUtils.get_and_focus_window(WINDOW_TITLE):
+            raise RuntimeError("No se pudo encontrar y enfocar la ventana del navegador.")
 
+        print("   -> 🔗 Conectando Selenium al navegador...")
+        driver = browser_manager.connect_to_browser()
+        if not driver:
+            raise ConnectionError("No se pudo conectar Selenium al inicio del proceso.")
+        print("   -> ✅ Selenium conectado exitosamente.")
+
+        # --- Inicia el proceso de registro con PyAutoGUI ---
         print("\n--- Iniciando Proceso de Registro con PyAutoGUI ---")
-
-        # 1. Ingresar correo con fallback de tabulador
-        email_images = ["correo_dark.png", "correo_ligh.png"]
-        if not pyautogui_service.find_and_click_humanly(email_images, attempts=2, wait_time=3):
-            print("⚠️ No se encontró el campo de correo por imagen. Usando tabulador como alternativa...")
-            for _ in range(5):
-                pyautogui.press("tab")
-                time.sleep(0.5)
+        
+        # 2. Rellenar formulario
+        if not pyautogui_service.find_and_click_humanly(["correo_dark.png", "correo_ligh.png"], attempts=2):
+            raise RuntimeError("No se encontró el campo de correo.")
         HumanInteractionUtils.type_text_humanly(email)
 
-        # 2. Clic en Continuar
         continue_images = ["continuar1.png", "continuar1_ligh.png"]
-        if not pyautogui_service.find_and_click_humanly(continue_images, attempts=5, scroll_on_fail=True):
+        if not pyautogui_service.find_and_click_humanly(continue_images, attempts=5):
             raise RuntimeError("No se encontró el primer botón 'Continuar'.")
 
-        # --- PASO MEJORADO: OBTENER Y ESCRIBIR CÓDIGO DE VERIFICACIÓN ---
-        print("\n--- Buscando código de verificación por correo ---")
+        # 3. Código de verificación
         verification_code = get_latest_verification_code()
-        
         if verification_code:
-            verification_images = ["verification.png"] # <-- Imagen que se buscará
-            print(f"   -> Buscando el campo de verificación con la imagen '{verification_images[0]}'...")
-            
-            # Intenta hacer clic en la imagen del campo de verificación
-            if pyautogui_service.find_and_click_humanly(verification_images, attempts=3, wait_time=2):
-                print(f"   -> Campo encontrado. Ingresando código: {verification_code}")
+            if pyautogui_service.find_and_click_humanly(["verification.png"], attempts=3):
                 HumanInteractionUtils.type_text_humanly(verification_code)
-                time.sleep(1)
             else:
-                # Si no encuentra la imagen, escribe el código directamente como antes
-                print(f"⚠️ No se encontró '{verification_images[0]}'. Escribiendo código directamente.")
+                print("⚠️ No se encontró 'verification.png'. Escribiendo código directamente.")
                 HumanInteractionUtils.type_text_humanly(verification_code)
-                time.sleep(1)
-            
-            # Vuelve a presionar Continuar
             pyautogui_service.find_and_click_humanly(continue_images)
-        else:
-            print("⚠️ No se encontró código de verificación, el flujo podría fallar si se requiere.")
-        # --------------------------------------------------
 
-        # 3. Saltar selección de intereses inicial
-        skip_images = ["saltar.png", "saltar_ligh.png"]
-        pyautogui_service.find_and_click_humanly(skip_images, attempts=10, wait_time=2)
-
-        # 4. Capturar nombre de usuario
-        username_images = ["usuario.png", "usuario_ligh.png"]
-        if not pyautogui_service.find_and_click_humanly(username_images, attempts=5, wait_time=2):
+        # 4. Capturar Username
+        if not pyautogui_service.find_and_click_humanly(["usuario.png", "usuario_ligh.png"], attempts=5, wait_time=2):
             raise RuntimeError("No se encontró el campo de nombre de usuario.")
-        pyautogui.hotkey('ctrl', 'a')
-        time.sleep(0.5)
+        pyautogui.hotkey('ctrl', 'a'); time.sleep(0.5)
         pyautogui.hotkey('ctrl', 'c')
-        time.sleep(0.5)
         username = pyperclip.paste()
         print(f"📋 Nombre de usuario capturado: '{username}'")
 
-        # 5. Ingresar contraseña
-        password_images = ["password.png"]
-        if not pyautogui_service.find_and_click_humanly(password_images, attempts=5):
-            raise RuntimeError("No se encontró el campo de contraseña. Asegúrate de que 'password.png' existe.")
+        # 5. Ingresar Contraseña
+        if not pyautogui_service.find_and_click_humanly(["password_dark.png", "password_ligh.png"]):
+            raise RuntimeError("No se encontró el campo de contraseña.")
         password = HumanInteractionUtils.generate_password()
         HumanInteractionUtils.type_text_humanly(password)
 
-        # 6. Clic en Continuar (después de la contraseña)
         if not pyautogui_service.find_and_click_humanly(continue_images):
             raise RuntimeError("No se encontró el segundo botón 'Continuar'.")
+        time.sleep(5)
 
-        # 7. Saltar selección de género
-        pyautogui_service.find_and_click_humanly(skip_images)
+        # 6. Género e Intereses
+        if pyautogui_service.find_and_click_humanly(["gender.png"], attempts=5):
+            pyautogui_service.find_and_click_humanly(continue_images)
+        if pyautogui_service.find_and_click_humanly(["interes14.png"], attempts=10, scroll_on_fail=True):
+            pyautogui_service.find_and_click_humanly(continue_images)
 
-        # 8. Seleccionar un interés y continuar
-        interest_images = ["interes14.png"]
-        if pyautogui_service.find_and_click_humanly(interest_images, attempts=10, wait_time=3, scroll_on_fail=True):
-            if not pyautogui_service.find_and_click_humanly(continue_images):
-                print("⚠️ No se pudo hacer clic en 'Continuar' después de seleccionar intereses.")
-        else:
-            print("⚠️ No se seleccionó ningún interés.")
-            
+        # 7. Marcar como exitoso y guardar
         print("✅ Registro con PyAutoGUI completado.")
-        credentials = {"username": username, "password": password, "email": email}
+        registration_successful = True
         
         print("\n" + "="*50)
         print("🎉 ¡REGISTRO EXITOSO! 🎉")
-        print(f"Correo: {credentials['email']}")
-        print(f"Usuario: {credentials['username']}")
-        print(f"Contraseña: {credentials['password']}")
+        print(f"Correo: {email}\nUsuario: {username}\nContraseña: {password}")
         print("="*50)
         
-        return credentials
+        db = next(get_db_secondary())
+        try:
+            db.add(Credential(username=username, password=password, email=email))
+            db.commit()
+            print("✅ Credenciales guardadas exitosamente en la base de datos.")
+        except Exception as db_error:
+            print(f"🚨 ERROR al guardar credenciales: {db_error}")
+            db.rollback()
+        finally:
+            db.close()
 
     except Exception as e:
-        print(f"\n🚨 ERROR FATAL en el flujo de registro: {e}")
+        print(f"\n🚨 ERROR FATAL durante el flujo de registro: {e}")
         traceback.print_exc()
-        print("\nProceso de registro abortado.")
+
     finally:
+        # --- BLOQUE FINAL MEJORADO ---
+        if registration_successful and driver:
+            print("\n--- Finalizando sesión de registro ---")
+            print("   -> ⏳ Esperando 15 segundos para que la página se estabilice...")
+            time.sleep(15)
+            try:
+                interaction_service = RedditInteractionService(driver, username)
+                interaction_service.logout_and_set_dark_mode()
+            except Exception as final_e:
+                print(f"   -> ⚠️ Error durante el proceso de cierre final: {final_e}")
+        
+        if browser_manager:
+            browser_manager.quit_driver()
         print("\nℹ️  El script de registro ha finalizado.")

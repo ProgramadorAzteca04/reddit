@@ -8,6 +8,8 @@ from selenium import webdriver
 from .desktop_service import PyAutoGuiService, DesktopUtils, HumanInteractionUtils
 from .browser_service import BrowserManager
 from .interaction_service import RedditInteractionService
+from app.db.database import get_db_secondary
+from app.models.reddit_models import Credential
 
 def perform_login_and_setup(username: str, password: str, url: str, window_title: str) -> Tuple[Optional[webdriver.Chrome], Optional[BrowserManager]]:
     """Abre el navegador, realiza el login con PyAutoGUI y conecta Selenium."""
@@ -61,30 +63,62 @@ def perform_login_and_setup(username: str, password: str, url: str, window_title
         return None, None
 
 def run_interaction_loop(service: RedditInteractionService, duration_minutes: int):
-    """Ejecuta un bucle de interacciones aleatorias durante un tiempo determinado."""
+    """
+    Ejecuta un bucle de interacciones aleatorias, con upvote_from_database 
+    ejecutándose como máximo una vez.
+    """
     start_time = time.time()
+    
+    interacted_post_ids_this_session = set()
+    # --- NUEVO FLAG ---
+    # Este flag controlará si la acción ya se realizó en esta sesión.
+    upvote_from_db_has_run = False
+
     action_map = {
         "scroll_page": service.scroll_page,
         "like_random_post": service.like_random_post,
-        "analizar_publicaciones_visibles": service.analizar_publicaciones_visibles
+        "analizar_publicaciones_visibles": service.analizar_publicaciones_visibles,
+        "upvote_from_database": lambda: service.upvote_from_database(interacted_post_ids_this_session)
     }
-    action_pool = ["scroll_page"] * 5 + ["like_random_post"] * 2 + ["analizar_publicaciones_visibles"] * 1
+    
+    action_pool = ["scroll_page"] * 5 + ["like_random_post"] * 2 + ["upvote_from_database"] * 3
     
     print("\n" + "="*50)
-    print("🤖 INICIANDO NAVEGACIÓN DINÁMICA 🤖")
+    print(f"🤖 INICIANDO NAVEGACIÓN DINÁMICA para '{service.username}' 🤖")
     print(f"OBJETIVO: Navegar durante {duration_minutes} minutos.")
     print("="*50 + "\n")
     
     service.prepare_page()
     
     while (time.time() - start_time) / 60 < duration_minutes:
+        if not action_pool:
+            print("   -> No hay más acciones disponibles.")
+            break
+
         action_name = random.choice(action_pool)
         print(f"\nPróxima acción: {action_name}")
-        action_to_run = action_map.get(action_name)
-        if action_to_run:
-            action_to_run()
+
+        # --- LÓGICA MODIFICADA ---
+        if action_name == 'upvote_from_database':
+            # Solo ejecuta la acción si el flag es Falso
+            if not upvote_from_db_has_run:
+                print("   -> Ejecutando 'upvote_from_database' por única vez en esta sesión.")
+                action_to_run = action_map.get(action_name)
+                if action_to_run:
+                    action_to_run()
+                
+                # Activa el flag y elimina la acción del pool para no volver a elegirla
+                upvote_from_db_has_run = True
+                action_pool = [action for action in action_pool if action != 'upvote_from_database']
+            else:
+                # Si ya se ejecutó, simplemente se salta y elige otra acción en la siguiente vuelta.
+                print("   -> 'upvote_from_database' ya fue ejecutada, eligiendo otra acción.")
+                continue
         else:
-            print(f"⚠️ Acción '{action_name}' no reconocida.")
+            action_to_run = action_map.get(action_name)
+            if action_to_run:
+                action_to_run()
+        # -------------------------
         
         wait_time = random.randint(5, 12)
         print(f"⏳ Esperando por {wait_time} segundos...")
@@ -93,22 +127,47 @@ def run_interaction_loop(service: RedditInteractionService, duration_minutes: in
     print(f"✅ Tiempo límite de {duration_minutes} minutos alcanzado. Finalizando.")
 
 
-def run_login_flow(username: str, password: str, url: str, window_title: str, interaction_minutes: int):
-    """Flujo principal que orquesta el login y la posterior interacción."""
+def run_login_flow(
+    credential_id: int, 
+    url: str, 
+    window_title: str, 
+    interaction_minutes: int
+):
+    """
+    Orquesta el login y la interacción para una cuenta, obteniendo sus
+    credenciales desde la base de datos a través de su ID.
+    """
     interaction_service: Optional[RedditInteractionService] = None
     browser_manager: Optional[BrowserManager] = None
+    
+    # 1. Obtener credenciales desde la base de datos
+    db = next(get_db_secondary())
+    try:
+        credential = db.query(Credential).filter(Credential.id == credential_id).first()
+        if not credential:
+            print(f"🚨 ERROR: No se encontró ninguna credencial con el ID: {credential_id}")
+            return
+        
+        username = credential.username
+        password = credential.password
+        
+        print(f"\n--- Iniciando login para la cuenta ID #{credential_id} ({username}) ---")
+
+    finally:
+        db.close()
+
+    # 2. El resto del flujo continúa como antes, usando las credenciales obtenidas
     try:
         driver, browser_manager = perform_login_and_setup(username, password, url, window_title)
         if driver and browser_manager:
-            interaction_service = RedditInteractionService(driver)
+            interaction_service = RedditInteractionService(driver, username)
             run_interaction_loop(interaction_service, interaction_minutes)
     except Exception as e:
-        print(f"\n🚨 ERROR FATAL en el flujo principal: {e}")
+        print(f"\n🚨 ERROR FATAL en el flujo principal para '{username}': {e}")
         traceback.print_exc()
-        print("\nProceso abortado.")
     finally:
         if interaction_service:
             interaction_service.logout()
         if browser_manager:
             browser_manager.quit_driver()
-        print("\nℹ️  El script ha finalizado. Se ha ejecutado el intento de cierre de sesión.")
+        print(f"\nℹ️  Fin del script para la cuenta '{username}'.")

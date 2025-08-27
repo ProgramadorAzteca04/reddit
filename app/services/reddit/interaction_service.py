@@ -2,21 +2,25 @@
 import time
 import pyautogui
 import os
+import random
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from bs4 import BeautifulSoup
-from typing import List
-from .desktop_service import PathManager, HumanInteractionUtils
+from typing import List, Set
+from sqlalchemy.sql.expression import func
+from sqlalchemy import not_
 
-# Alinear la excepción
+from .desktop_service import PathManager, HumanInteractionUtils
+from app.db.database import get_db_secondary
+from app.models.reddit_models import Post, Credential
+
 try:
     from pyscreeze import ImageNotFoundException
 except ImportError:
     ImageNotFoundException = pyautogui.ImageNotFoundException
 
 def analizar_post_html(post_html: BeautifulSoup):
-    """Extrae la información relevante de un único post de Reddit a partir de su HTML."""
     titulo_tag = post_html.find('a', {'slot': 'title'})
     titulo = titulo_tag.text.strip() if titulo_tag else "No encontrado"
     subreddit_tag = post_html.find('a', {'data-testid': 'subreddit-name'})
@@ -34,61 +38,98 @@ def analizar_post_html(post_html: BeautifulSoup):
 
 class RedditInteractionService:
     """Servicio para interactuar con Reddit después del login."""
-    def __init__(self, driver: webdriver.Chrome):
+    # --- INICIALIZADOR CORREGIDO ---
+    def __init__(self, driver: webdriver.Chrome, username: str):
         self.driver = driver
+        self.username = username
+        self.credential_id = None
+
+    def _get_credential_id(self, db) -> int | None:
+        if self.credential_id:
+            return self.credential_id
+        
+        credential = db.query(Credential).filter(Credential.username == self.username).first()
+        if credential:
+            self.credential_id = credential.id
+            return self.credential_id
+        return None
 
     def _like_post_with_pyautogui(self) -> bool:
-        """Busca y hace clic en la flecha de upvote usando PyAutoGUI como fallback."""
         print("👍 Intentando hacer 'upvote' con PyAutoGUI...")
         try:
             upvote_image_path = os.path.join(PathManager.get_img_folder(), "post_upvote_arrow.png")
-            if not os.path.exists(upvote_image_path):
-                print(f"   -> ❌ No se encontró el archivo de imagen: {upvote_image_path}")
-                return False
+            if not os.path.exists(upvote_image_path): return False
             pos = pyautogui.locateCenterOnScreen(upvote_image_path, confidence=0.8)
             if pos:
-                print("   -> ✅ Imagen de upvote encontrada.")
                 HumanInteractionUtils.move_mouse_humanly(pos.x, pos.y)
                 pyautogui.click()
                 time.sleep(1)
                 return True
-            else:
-                print("   -> ❌ No se encontró la imagen de upvote en la pantalla.")
-                return False
-        except (ImageNotFoundException, Exception) as e:
-            print(f"   -> ⚠️ Error en PyAutoGUI durante el upvote: {e}")
+            return False
+        except (ImageNotFoundException, Exception):
             return False
 
+    def upvote_from_database(self, interacted_post_ids_session: Set[str]):
+        print(f"\n--- 🎲 Iniciando interacción: Upvote desde BD para '{self.username}' ---")
+        db = next(get_db_secondary())
+        try:
+            credential_id = self._get_credential_id(db)
+            if not credential_id:
+                print(f"   -> ⚠️ No se encontró la credencial para el usuario '{self.username}'.")
+                return
+
+            random_post = db.query(Post).filter(
+                not_(Post.interacted_by_credential_ids.contains([credential_id])),
+                not_(Post.id.in_(list(interacted_post_ids_session)))
+            ).order_by(func.random()).first()
+            
+            if not random_post or not random_post.post_url:
+                print("   -> ✅ No hay posts nuevos disponibles para esta cuenta.")
+                return
+
+            print(f"   -> 🎯 Post seleccionado (ID: {random_post.id}). Navegando...")
+            self.driver.get(random_post.post_url)
+            time.sleep(random.randint(5, 8))
+
+            if self._like_post_with_pyautogui():
+                print(f"   -> ✅ Upvote exitoso para el post ID: {random_post.id}")
+                random_post.interacted_by_credential_ids.append(credential_id)
+                db.commit()
+                print("   -> 💾 Base de datos actualizada.")
+            else:
+                print(f"   -> ❌ Falló el upvote para el post ID: {random_post.id}")
+
+            interacted_post_ids_session.add(random_post.id)
+            
+            time.sleep(2)
+            self.driver.get("https://www.reddit.com/")
+            time.sleep(random.randint(3, 5))
+
+        except Exception as e:
+            print(f"   -> 🚨 Error durante la interacción de upvote desde BD: {e}")
+            db.rollback()
+        finally:
+            db.close()
+    
     def prepare_page(self):
-        """Refresca la página y la prepara para la interacción."""
         print("⏳ Esperando 10 segundos después del login...")
         time.sleep(10)
-        print("🔄 Refrescando la página para asegurar carga completa...")
         self.driver.refresh()
         time.sleep(5)
-        print("🔐 Enviando tecla 'Escape' para cerrar posibles pop-ups...")
         try:
             self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
             time.sleep(1)
-        except Exception as e:
-            print(f"⚠️ No se pudo enviar la tecla Escape. Error: {e}")
+        except Exception: pass
 
     def scroll_page(self, direction: str = "down"):
-        """Realiza scroll en la página usando JavaScript."""
         scroll_amount = 800 if direction == "down" else -800
-        print(f"📜 Haciendo scroll (Selenium) {'hacia abajo' if direction == 'down' else 'hacia arriba'}...")
         self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
 
     def like_random_post(self):
-        """Intenta dar upvote a un post usando el método de PyAutoGUI."""
-        if self._like_post_with_pyautogui():
-            print("  (✅ ¡ÉXITO! Se dio 'upvote' con PyAutoGUI.)\n")
-        else:
-            print("  (❌ Falló el intento de 'upvote' con PyAutoGUI.)\n")
+        if self._like_post_with_pyautogui(): print("  (✅ ¡ÉXITO! Se dio 'upvote' con PyAutoGUI.)\n")
+        else: print("  (❌ Falló el intento de 'upvote' con PyAutoGUI.)\n")
     
     def analizar_publicaciones_visibles(self) -> List[dict]:
-        """Analiza todos los posts visibles en la página actual."""
-        print("\n🔎 Analizando publicaciones en la vista actual...")
         posts = []
         try:
             soup = BeautifulSoup(self.driver.page_source, 'lxml')
@@ -97,21 +138,49 @@ class RedditInteractionService:
                 post_data = analizar_post_html(post_html)
                 post_data['id'] = post_html.get('id', 'No encontrado')
                 posts.append(post_data)
-            print(f"✅ Se analizaron {len(posts)} publicaciones.")
-        except Exception as e:
-            print(f"🚨 Error analizando publicaciones: {e}")
+        except Exception: pass
         return posts
         
     def logout(self):
-        """Realiza el proceso de cierre de sesión."""
         print("\n👋 Iniciando proceso de cierre de sesión...")
         try:
-            print("   -> Abriendo el menú de usuario...")
             self.driver.execute_script("document.getElementById('expand-user-drawer-button').click();")
             time.sleep(2)
-            print("   -> Haciendo clic en 'Cerrar Sesión'...")
             self.driver.execute_script("document.getElementById('logout-list-item').click();")
             time.sleep(3)
             print("✅ Cierre de sesión completado exitosamente.")
         except Exception as e:
             print(f"🚨 Error durante el cierre de sesión: {e}")
+
+    def logout_and_set_dark_mode(self):
+        """
+        Activa el modo oscuro y luego realiza el cierre de sesión.
+        Diseñado para ser usado al final del flujo de registro.
+        """
+        print("\n👋 Iniciando proceso de cierre de sesión y activación de modo oscuro...")
+        try:
+            # 1. Abrir el menú de usuario
+            print("   -> Abriendo el menú de usuario...")
+            self.driver.execute_script("document.getElementById('expand-user-drawer-button').click();")
+            time.sleep(2)
+
+            # 2. Activar el modo oscuro
+            print("   -> Activando modo oscuro...")
+            self.driver.execute_script("document.getElementById('darkmode-list-item').click();")
+            time.sleep(2) # Espera para que el tema cambie
+
+            # 3. Volver a abrir el menú (puede que se cierre al cambiar de tema)
+            print("   -> Re-abriendo el menú de usuario...")
+            self.driver.execute_script("document.getElementById('expand-user-drawer-button').click();")
+            time.sleep(2)
+
+            # 4. Hacer clic en 'Cerrar Sesión'
+            print("   -> Haciendo clic en 'Cerrar Sesión'...")
+            self.driver.execute_script("document.getElementById('logout-list-item').click();")
+            time.sleep(3)
+            
+            print("✅ Modo oscuro activado y cierre de sesión completado.")
+        except Exception as e:
+            print(f"🚨 Error durante el logout especial: {e}")
+            # Si algo falla, intenta un logout normal como fallback
+            self.logout()

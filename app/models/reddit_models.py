@@ -9,6 +9,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.sql import func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.mutable import MutableList
 
 from app.db.database import Base_secondary as Base
 
@@ -68,6 +70,7 @@ class Post(Base):
     comments_count = Column(Integer, default=0)
     post_url = Column(String, unique=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    interacted_by_credential_ids = Column(MutableList.as_mutable(JSONB), server_default='[]')
 
     # Relación: Una publicación puede tener interacciones de muchos usuarios.
     interacting_users = relationship(

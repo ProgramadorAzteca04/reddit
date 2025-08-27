@@ -4,12 +4,51 @@ import sys
 import mailbox
 import re
 import time
+import subprocess  # <-- Importación nueva
 from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from email.header import decode_header
 
-# ----------------------- Utilidades (adaptadas del script original) ----------------------- #
+# --- NUEVA CONSTANTE: RUTA A THUNDERBIRD ---
+# Cambia esta ruta si tu Thunderbird está instalado en otro lugar.
+THUNDERBIRD_PATH = r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe"
+
+# ----------------------- Nueva Función de Sincronización ----------------------- #
+
+def _open_and_sync_thunderbird(duration_seconds: int = 60):
+    """Abre Thunderbird, espera para que sincronice y luego lo cierra de forma segura."""
+    if not os.path.exists(THUNDERBIRD_PATH):
+        print(f"⚠️ No se encontró el ejecutable de Thunderbird en: {THUNDERBIRD_PATH}")
+        print("   -> Saltando la sincronización. Se leerán los correos locales existentes.")
+        return
+
+    process = None
+    try:
+        print(f"\n⚡ Abriendo Thunderbird para sincronizar por {duration_seconds} segundos...")
+        process = subprocess.Popen([THUNDERBIRD_PATH])
+        # Barra de progreso para la espera
+        for i in range(duration_seconds):
+            time.sleep(1)
+            progress = i + 1
+            print(f"\r   -> Sincronizando... [{progress}/{duration_seconds}s]", end="")
+        print("\n   -> Tiempo de sincronización finalizado.")
+
+    except Exception as e:
+        print(f"🚨 Error al intentar abrir Thunderbird: {e}")
+    finally:
+        if process:
+            print("   -> Cerrando Thunderbird...")
+            process.terminate()  # Intenta cerrar amistosamente primero
+            try:
+                process.wait(timeout=5)  # Espera 5 segundos a que cierre
+            except subprocess.TimeoutExpired:
+                print("   -> Thunderbird no respondió, forzando el cierre.")
+                process.kill()  # Si no cierra, lo fuerza
+            print("   -> Thunderbird cerrado.\n")
+
+
+# ----------------------- Utilidades (sin cambios) ----------------------- #
 
 def _guess_profile_dir():
     """Intenta adivinar el directorio de perfiles de Thunderbird más reciente."""
@@ -17,16 +56,13 @@ def _guess_profile_dir():
     if not os.path.isdir(base_appdata):
         raise FileNotFoundError("No se encontró Thunderbird en AppData/Roaming/Thunderbird/Profiles")
     
-    # Priorizar perfiles *.default-release
     candidates = [os.path.join(base_appdata, n) for n in os.listdir(base_appdata) if n.endswith(".default-release")]
     if not candidates:
-        # Fallback a cualquier directorio de perfil
         candidates = [os.path.join(base_appdata, n) for n in os.listdir(base_appdata) if os.path.isdir(os.path.join(base_appdata, n))]
     
     if not candidates:
         raise FileNotFoundError("No se encontró ningún perfil de Thunderbird.")
     
-    # Devolver el perfil modificado más recientemente
     candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return candidates[0]
 
@@ -54,43 +90,31 @@ def _is_probable_mbox_file(path):
         return False
 
 def _decode_header_value(value: str) -> str:
-    """Decodifica encabezados RFC 2047."""
-    if not value:
-        return ""
+    if not value: return ""
     parts = decode_header(value)
     chunks = []
     for txt, enc in parts:
         try:
-            if isinstance(txt, bytes):
-                chunks.append(txt.decode(enc or "utf-8", errors="replace"))
-            else:
-                chunks.append(txt)
+            chunks.append(txt.decode(enc or "utf-8", errors="replace") if isinstance(txt, bytes) else txt)
         except Exception:
-            if isinstance(txt, bytes):
-                chunks.append(txt.decode("utf-8", errors="replace"))
-            else:
-                chunks.append(str(txt))
+            chunks.append(str(txt) if not isinstance(txt, bytes) else txt.decode("utf-8", errors="replace"))
     return "".join(chunks).strip()
 
 def _get_datetime(date_header):
-    if not date_header:
-        return None
+    if not date_header: return None
     try:
         return parsedate_to_datetime(date_header)
     except Exception:
         return None
 
 def _get_body_text(msg):
-    """Extrae el cuerpo del texto, priorizando texto plano sobre HTML."""
     if msg.is_multipart():
         for part in msg.walk():
-            ctype = part.get_content_type()
-            if ctype == "text/plain":
+            if part.get_content_type() == "text/plain":
                 try:
                     return " ".join((part.get_content() or "").split())
                 except Exception:
                     continue
-    # Fallback si no es multipart o no hay texto plano
     try:
         body = msg.get_body(preferencelist=("plain", "html"))
         content = body.get_content()
@@ -105,15 +129,13 @@ def _collect_messages(profile_dir):
     results = []
     roots = [os.path.join(profile_dir, "ImapMail"), os.path.join(profile_dir, "Mail")]
     for root_candidate in roots:
-        if not os.path.isdir(root_candidate):
-            continue
+        if not os.path.isdir(root_candidate): continue
         for root, _, files in os.walk(root_candidate):
             if root.lower().endswith(".mozmsgs"):
                 for name in files:
                     if name.lower().endswith((".eml", ".wdseml")):
                         try:
-                            msg = _parse_eml(os.path.join(root, name))
-                            results.append(msg)
+                            results.append(_parse_eml(os.path.join(root, name)))
                         except Exception:
                             continue
             else:
@@ -125,25 +147,24 @@ def _collect_messages(profile_dir):
     return results
 
 def _extract_six_digits_from_msg(msg):
-    """Intenta extraer un código de 6 dígitos del asunto o del cuerpo."""
     subject = _decode_header_value(msg.get("Subject"))
     m_subject = re.search(r"\b(\d{6})\b", subject)
-    if m_subject:
-        return m_subject.group(1)
-
+    if m_subject: return m_subject.group(1)
     body = _get_body_text(msg)
     m_body = re.search(r"\b(\d{6})\b", body)
-    if m_body:
-        return m_body.group(1)
+    if m_body: return m_body.group(1)
     return None
 
-# ----------------------- Función Principal del Servicio ----------------------- #
+# ----------------------- Función Principal del Servicio (Modificada) ----------------------- #
 
 def get_latest_verification_code(profile_path: str = None, timeout_seconds: int = 60) -> str | None:
     """
-    Busca el correo de verificación más reciente en un perfil de Thunderbird y devuelve el código.
-    Reintenta la búsqueda hasta que se agote el tiempo de espera.
+    Abre Thunderbird para sincronizar, luego busca el correo de verificación más reciente y devuelve el código.
     """
+    # --- PASO AÑADIDO: ABRIR, SINCRONIZAR Y CERRAR THUNDERBIRD ---
+    _open_and_sync_thunderbird(duration_seconds=60)
+    # ----------------------------------------------------------------
+
     print(f"📧 Buscando código de verificación de 6 dígitos en los correos de Thunderbird...")
     start_time = time.time()
     
@@ -164,10 +185,7 @@ def get_latest_verification_code(profile_path: str = None, timeout_seconds: int 
                 time.sleep(5)
                 continue
 
-            # Ordenar por fecha, más reciente primero
             verification_emails.sort(key=lambda t: (t[0] is not None, t[0]), reverse=True)
-
-            # Extraer el código del más reciente
             latest_msg = verification_emails[0][1]
             code = _extract_six_digits_from_msg(latest_msg)
 
