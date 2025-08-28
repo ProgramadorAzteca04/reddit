@@ -140,7 +140,8 @@ def run_login_flow(
     credential_id: int, 
     url: str, 
     window_title: str, 
-    interaction_minutes: int
+    interaction_minutes: int,
+    upvote_from_database_enabled: bool 
 ):
     """
     Orquesta el login y la interacción para una cuenta, obteniendo sus
