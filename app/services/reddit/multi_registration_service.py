@@ -18,7 +18,7 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
         with open(file_path, 'r') as f:
             all_emails = [line.strip() for line in f if line.strip()]
         if len(all_emails) < count:
-            print(f"   -> ⚠️ ADVERTENCIA: Se solicitaron {count} registros, pero solo hay {len(all_emails)} correos. Se intentará registrar el máximo posible.")
+            print(f"   -> ⚠️  ADVERTENCIA: Se solicitaron {count} registros, pero solo hay {len(all_emails)} correos. Se intentará registrar el máximo posible.")
         print(f"   -> ✅ Se encontraron {len(all_emails)} correos disponibles en '{file_path}'.")
     except FileNotFoundError:
         print(f"   -> 🚨 ERROR: No se encontró el archivo de correos en la ruta: '{file_path}'")
@@ -26,6 +26,7 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
 
     successful_registrations = 0
     used_emails = set() # Para llevar registro de los correos ya usados (exitosos o fallidos)
+    pausa_duration = 240 # <-- ¡CAMBIO! Se inicializa la duración de la pausa aquí.
 
     # Bucle principal: continúa hasta que se alcance el objetivo de registros
     while successful_registrations < count:
@@ -50,16 +51,18 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
                 successful_registrations += 1
                 print(f"   -> ✅ REGISTRO EXITOSO para '{email_to_try}'")
                 
-                # Si aún no hemos alcanzado el objetivo, hacemos la pausa de 30 segundos
+                # Si aún no hemos alcanzado el objetivo, hacemos la pausa
                 if successful_registrations < count:
                     # --- BUCLE DE CONTEO REGRESIVO ---
-                    pausa_duration = 240
-                    print(f"\n   -> ⏸️ Pausa de {pausa_duration} segundos antes del siguiente registro...")
+                    print(f"\n   -> ⏸️  Pausa de {pausa_duration} segundos antes del siguiente registro...")
                     for i in range(pausa_duration, 0, -1):
                         # Imprime el contador en la misma línea
                         print(f"\r      Siguiente intento en {i} segundos...  ", end="", flush=True)
                         time.sleep(1)
                     print("\r                                          \r", end="")
+                    
+                    # <-- ¡CAMBIO! Se incrementa la duración para la siguiente pausa.
+                    pausa_duration += 60
             else:
                 # Este caso ocurre si el correo fue rechazado por Reddit (error.jpg)
                 print(f"   -> 🛑 CORREO RECHAZADO: '{email_to_try}'. Se intentará con un nuevo correo.")
