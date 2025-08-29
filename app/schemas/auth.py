@@ -28,3 +28,8 @@ class MultiLoginRequest(BaseModel):
 
 class CreatePostRequest(BaseModel):
     credential_id: int = Field(..., description="ID de la credencial a utilizar para crear el post.")
+
+class MultiRegisterRequest(BaseModel):
+    count: int = Field(..., gt=0, description="Número de cuentas a registrar.")
+    file_path: str = Field("correos.txt", description="Ruta al archivo de texto con los correos.")
+    url: str = Field("https://www.reddit.com/register/", description="URL de registro de Reddit.")

@@ -16,7 +16,7 @@ THUNDERBIRD_PATH = r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe"
 
 # ----------------------- Nueva Función de Sincronización ----------------------- #
 
-def _open_and_sync_thunderbird(duration_seconds: int = 60):
+def _open_and_sync_thunderbird(duration_seconds: int = 30):
     """Abre Thunderbird, espera para que sincronice y luego lo cierra de forma segura."""
     if not os.path.exists(THUNDERBIRD_PATH):
         print(f"⚠️ No se encontró el ejecutable de Thunderbird en: {THUNDERBIRD_PATH}")

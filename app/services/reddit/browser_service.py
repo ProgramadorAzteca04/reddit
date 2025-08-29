@@ -32,9 +32,9 @@ class BrowserManager:
     def open_chrome_with_debugging(self, url: str) -> None:
         """Abre Chrome con el puerto de depuración remoto activado."""
         # Eliminamos el argumento --start-maximized para evitar conflictos.
-        command = [self.chrome_path, f"--remote-debugging-port={self.port}", f"--user-data-dir={self.user_data_dir}", url]
+        command = [self.chrome_path, "--incognito", f"--remote-debugging-port={self.port}", f"--user-data-dir={self.user_data_dir}", url] # 👈 AÑADIDO AQUÍ
         self._launch_chrome(command)
-        print(f"🌐 Chrome (Debug) abierto en el puerto {self.port}")
+        print(f"🕵️ Chrome (Incognito & Debug) abierto en el puerto {self.port}") # Mensaje actualizado para claridad
 
     def open_chrome_incognito(self, url: str) -> None:
         """Abre una nueva ventana de Chrome en modo incógnito."""

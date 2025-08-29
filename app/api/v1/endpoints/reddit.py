@@ -1,11 +1,11 @@
 # app/api/v1/endpoints/reddit.py
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
-from pydantic import BaseModel, Field, EmailStr
-from app.schemas.auth import LoginRequest, AutomationRequest, MultiLoginRequest, CreatePostRequest
+from app.schemas.auth import LoginRequest, AutomationRequest, MultiLoginRequest, CreatePostRequest, MultiRegisterRequest
 from app.services.reddit.login_service import run_login_flow
 from app.services.reddit.registration_service import run_registration_flow
 from app.services.reddit.post_creator_service import execute_create_post_flow
 from app.services.reddit.multi_account_service import run_multi_login_flow
+from app.services.reddit import multi_registration_service
 
 router = APIRouter()
 
@@ -19,6 +19,31 @@ async def start_reddit_registration(request: AutomationRequest, background_tasks
     print(f"🚀 Petición recibida para registrar el correo: {request.email}")
     background_tasks.add_task(run_registration_flow, request.email, request.url)
     return {"message": "El proceso de registro ha comenzado en segundo plano."}
+
+@router.post("/multi-register", summary="Registrar Múltiples Cuentas desde Archivo")
+async def multi_register_accounts(request: MultiRegisterRequest, background_tasks: BackgroundTasks):
+    """
+    Inicia un proceso en segundo plano para registrar un número específico de 
+    cuentas de Reddit, tomando los correos de forma aleatoria desde un archivo de texto.
+    
+    - **count**: Número de cuentas que deseas registrar.
+    - **file_path**: Ruta al archivo .txt que contiene la lista de correos.
+    - **url**: URL de la página de registro.
+    """
+    try:
+        # Usamos BackgroundTasks para que la API responda inmediatamente
+        # mientras el proceso de registro (que es lento) se ejecuta en segundo plano.
+        background_tasks.add_task(
+            multi_registration_service.run_multi_registration_flow,
+            count=request.count,
+            file_path=request.file_path,
+            url=request.url
+        )
+        
+        return {"message": f"Proceso de registro para {request.count} cuentas iniciado en segundo plano. Revisa la consola para ver el progreso."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/login", status_code=202)
