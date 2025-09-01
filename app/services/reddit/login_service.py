@@ -88,10 +88,12 @@ def run_interaction_loop(service: RedditInteractionService, duration_minutes: in
         action_pool += ["repost_best_post_from_feed"] * 2
         print("   -> Interacción 'repost_best_post_from_feed' HABILITADA.")
     
-    if comment_on_feed_enabled: # <-- LÓGICA PARA NUEVA ACCIÓN
+    if comment_on_feed_enabled:
         action_pool += ["comment_on_best_post_from_feed"] * 3
-        print("   -> Interacción 'comment_on_best_post_from_feed' HABILITADA.")
-    
+        print("   ->  mature account: Interacción 'comment_on_best_post_from_feed' HABILITADA.")
+    else:
+        print("   -> account not mature: Interacción 'comment_on_best_post_from_feed' DESHABILITADA.")
+
     print("\n" + "="*50)
     print(f"🤖 INICIANDO NAVEGACIÓN DINÁMICA para '{service.username}' 🤖")
     print(f"OBJETIVO: Navegar durante {duration_minutes} minutos.")
@@ -137,12 +139,11 @@ def run_login_flow(
     window_title: str, 
     interaction_minutes: int,
     upvote_from_database_enabled: bool,
-    repost_from_feed_enabled: bool,
-    comment_on_feed_enabled: bool
+    repost_from_feed_enabled: bool
 ):
     """
     Orquesta el login y la interacción para una cuenta, obteniendo sus
-    credenciales desde la base de datos a través de su ID.
+    credenciales y estado de 'maduracion' desde la base de datos.
     """
     interaction_service: Optional[RedditInteractionService] = None
     browser_manager: Optional[BrowserManager] = None
@@ -156,8 +157,10 @@ def run_login_flow(
         
         username = credential.username
         password = credential.password
+        is_mature = credential.maduracion
         
         print(f"\n--- Iniciando login para la cuenta ID #{credential_id} ({username}) ---")
+        print(f"    -> Estado de maduración: {'✅ MADURA' if is_mature else '❌ NO MADURA'}")
 
     finally:
         db.close()
@@ -166,13 +169,14 @@ def run_login_flow(
         driver, browser_manager = perform_login_and_setup(username, password, url, window_title)
         if driver and browser_manager:
             interaction_service = RedditInteractionService(driver, username)
-            # Pasamos el nuevo parámetro a la función de interacción
+            # --- CAMBIO AÑADIDO ---
+            # La llamada a la función ahora usa los nombres de parámetro correctos.
             run_interaction_loop(
-                interaction_service, 
-                interaction_minutes, 
-                upvote_from_database_enabled,
-                repost_from_feed_enabled,
-                comment_on_feed_enabled
+                service=interaction_service,
+                duration_minutes=interaction_minutes,
+                upvote_from_database_enabled=upvote_from_database_enabled,
+                repost_from_feed_enabled=repost_from_feed_enabled,
+                comment_on_feed_enabled=is_mature
             )
     except Exception as e:
         print(f"\n🚨 ERROR FATAL en el flujo principal para '{username}': {e}")

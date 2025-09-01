@@ -12,7 +12,6 @@ class LoginRequest(BaseModel):
     interaction_minutes: int = Field(5, description="Duración de la interacción.")
     upvote_from_database_enabled: bool = Field(True, description="Habilita dar upvote a posts guardados en la BD.")
     repost_from_feed_enabled: bool = Field(False, description="Habilita analizar el feed y republicar el mejor post.")
-    comment_on_feed_enabled: bool = Field(False, description="Habilita analizar el feed, generar un comentario y publicarlo.")
 
 class ElementLocator(BaseModel):
     images: List[str]
@@ -28,7 +27,6 @@ class MultiLoginRequest(BaseModel):
     interaction_minutes: int = Field(5, description="Duración de la interacción por cada cuenta.")
     upvote_from_database_enabled: bool = Field(True, description="...")
     repost_from_feed_enabled: bool = Field(False, description="Habilita la interacción de analizar el feed con IA y republicar el mejor post.")
-    comment_on_feed_enabled: bool = Field(False, description="Habilita analizar el feed, generar un comentario y publicarlo.")
 
 
 class CreatePostRequest(BaseModel):

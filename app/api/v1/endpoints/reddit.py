@@ -57,8 +57,7 @@ async def start_login(request: LoginRequest, background_tasks: BackgroundTasks):
         window_title=request.window_title,
         interaction_minutes=request.interaction_minutes,
         upvote_from_database_enabled=request.upvote_from_database_enabled,
-        repost_from_feed_enabled=request.repost_from_feed_enabled,
-        comment_on_feed_enabled=request.comment_on_feed_enabled # <-- NUEVO PARÁMETRO
+        repost_from_feed_enabled=request.repost_from_feed_enabled
     )
     return {"message": "El proceso de login y navegación ha comenzado en segundo plano."}
 
@@ -83,8 +82,7 @@ async def start_multi_login(request: MultiLoginRequest, background_tasks: Backgr
         window_title=request.window_title,
         interaction_minutes=request.interaction_minutes,
         upvote_from_database_enabled=request.upvote_from_database_enabled,
-        repost_from_feed_enabled=request.repost_from_feed_enabled,
-        comment_on_feed_enabled=request.comment_on_feed_enabled # <-- NUEVO PARÁMETRO
+        repost_from_feed_enabled=request.repost_from_feed_enabled
     )
     return {"message": "El proceso de login múltiple ha comenzado en segundo plano."}
 

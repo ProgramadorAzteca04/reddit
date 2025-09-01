@@ -13,10 +13,11 @@ def run_multi_login_flow(
     window_title: str, 
     interaction_minutes: int,
     upvote_from_database_enabled: bool,
-    repost_from_feed_enabled: bool # <-- PARÁMETRO AÑADIDO
+    repost_from_feed_enabled: bool
 ):
     """
-    Orquesta un flujo de login para múltiples cuentas, una tras otra.
+    Orquesta un flujo de login para múltiples cuentas, una tras otra,
+    verificando la maduración de cada una.
     """
     print("\n" + "="*60)
     print(f"🚀 INICIANDO SERVICIO MULTI-CUENTA PARA {len(account_ids)} CUENTAS.")
@@ -38,9 +39,11 @@ def run_multi_login_flow(
 
         username = account.username
         password = account.password
+        is_mature = account.maduracion
 
         print(f"\n--- ⏳ PROCESANDO CUENTA #{i+1}: '{username}' (ID: {account_id}) ---")
-        
+        print(f"    -> Estado de maduración: {'✅ MADURA' if is_mature else '❌ NO MADURA'}")
+
         interaction_service: Optional[RedditInteractionService] = None
         browser_manager: Optional[BrowserManager] = None
         
@@ -49,12 +52,14 @@ def run_multi_login_flow(
             
             if driver and browser_manager:
                 interaction_service = RedditInteractionService(driver, username)
-                # Pasamos el nuevo parámetro al bucle de cada cuenta
+                # --- CAMBIO AÑADIDO ---
+                # Se corrige el nombre del parámetro de 'interaction_service' a 'service'.
                 run_interaction_loop(
-                    interaction_service, 
-                    interaction_minutes, 
-                    upvote_from_database_enabled,
-                    repost_from_feed_enabled # <-- PARÁMETRO PASADO
+                    service=interaction_service, 
+                    duration_minutes=interaction_minutes, 
+                    upvote_from_database_enabled=upvote_from_database_enabled,
+                    repost_from_feed_enabled=repost_from_feed_enabled,
+                    comment_on_feed_enabled=is_mature
                 )
             else:
                 print(f"   -> 🚨 Falló el login para '{username}'. Pasando a la siguiente cuenta.")

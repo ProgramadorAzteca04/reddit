@@ -5,7 +5,8 @@ from sqlalchemy import (
     String,
     DateTime,
     ForeignKey,
-    Table
+    Table,
+    Boolean,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from sqlalchemy.sql import func
@@ -41,20 +42,14 @@ class Credential(Base):
     password = Column(String, nullable=False) # En producción, esto debería estar encriptado.
     email = Column(String, unique=True, index=True, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # Relación: Un usuario puede interactuar con muchas publicaciones.
-    # 'interactions' es la tabla de asociación que se usará.
+    maduracion = Column(Boolean, server_default='false', nullable=False)
     interacted_posts = relationship(
         "Post",
         secondary=interaction_association_table,
         back_populates="interacting_users"
     )
-
     def __repr__(self):
         return f"<Credential(username='{self.username}')>"
-
-
-# --- TABLA DE PUBLICACIONES ---
 class Post(Base):
     """
     Almacena la información extraída de una publicación de Reddit.
