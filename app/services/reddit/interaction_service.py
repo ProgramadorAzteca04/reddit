@@ -8,7 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from .desktop_service import PyAutoGuiService
 from bs4 import BeautifulSoup
-from typing import List, Set
+from typing import List, Set, Optional, Dict
 from sqlalchemy.sql.expression import func
 from sqlalchemy import not_
 from .feed_service import FeedService, _user_prefixed
@@ -16,6 +16,7 @@ from app.services.openai.content_generator_service import select_best_post_title
 from .desktop_service import PathManager, HumanInteractionUtils
 from app.db.database import get_db_secondary
 from app.models.reddit_models import Post, Credential
+from sqlalchemy.orm import Session
 
 try:
     from pyscreeze import ImageNotFoundException
@@ -39,84 +40,28 @@ def analizar_post_html(post_html: BeautifulSoup):
     return {"subreddit": subreddit, "autor": autor, "titulo": titulo, "score": score_value, "comentarios": int(num_comentarios)}
 
 class RedditInteractionService:
-    """Servicio para interactuar con Reddit después del login."""
-    # --- INICIALIZADOR CORREGIDO ---
+    """
+    Servicio refactorizado para interactuar con Reddit después del login.
+    Los métodos largos han sido divididos en funciones privadas más pequeñas y reutilizables.
+    """
     def __init__(self, driver: webdriver.Chrome, username: str):
         self.driver = driver
         self.username = username
-        self.credential_id = None
+        self.credential_id: Optional[int] = None
+        self.pyautogui_service = PyAutoGuiService()
 
+    # --- Flujo Principal de Republicación ---
     def repost_best_post_from_feed(self):
         """
-        Analiza el feed actual, usa la IA para seleccionar el mejor post y lo republica.
+        Orquesta el flujo de análisis del feed y republicación del mejor post.
         """
         print("\n🤖 --- Iniciando Interacción: Republicar Mejor Post del Feed --- 🤖")
         try:
-            # 1. Navegar al feed principal y analizarlo
-            print("   -> Navegando al feed principal...")
-            self.driver.get("https://www.reddit.com/")
-            time.sleep(10)
-
-            print("   -> Analizando el feed con IA...")
-            feed_service = FeedService(self.driver.page_source)
-            best_post = feed_service.get_best_post_by_ai()
-
+            best_post = self._select_best_post_from_feed()
             if not best_post:
-                print("   -> No se pudo seleccionar una publicación. Abortando interacción.")
-                return
+                return # El método _select_best_post_from_feed ya imprime el error.
 
-            print("\n   🎯 MEJOR PUBLICACIÓN SELECCIONADA POR IA:")
-            print(f"      -> Título: {best_post['title']}")
-            print(f"      -> Enlace: {best_post['link']}")
-            
-            # 2. Navegar al post y realizar la secuencia de clics
-            print(f"\n   -> 🚀 Navegando a la publicación seleccionada...")
-            self.driver.get(best_post['link'])
-            time.sleep(10)
-
-            pyautogui_service = PyAutoGuiService()
-            print("   -> 🖱️ Buscando 'compartir.png'...")
-            if pyautogui_service.find_and_click_humanly(['compartir.png']):
-                print("      -> ✅ Clic en Compartir. Esperando menú...")
-                time.sleep(2)
-                
-                print("      -> 🖱️ Buscando 'republicar.png'...")
-                if pyautogui_service.find_and_click_humanly(['republicar.png']):
-                    print("         -> ✅ Clic en Republicar. Esperando vista de publicación...")
-                    time.sleep(10)
-
-                    # 3. Seleccionar comunidad y publicar
-                    print("         -> 🖱️ Buscando 'select_community.png'...")
-                    img_path = os.path.join(PathManager.get_img_folder(), "select_community.png")
-                    community_button_pos = pyautogui.locateCenterOnScreen(img_path, confidence=0.8)
-
-                    if community_button_pos:
-                        pyautogui.click(community_button_pos)
-                        print("            -> ✅ Clic en Seleccionar Comunidad. Escribiendo perfil...")
-                        time.sleep(1.5)
-                        target_profile = _user_prefixed(self.username) # Usamos el username del servicio
-                        pyautogui.write(target_profile, interval=0.1)
-                        time.sleep(2.5)
-
-                        option_x = community_button_pos.x
-                        option_y = community_button_pos.y + 60
-                        
-                        print(f"            -> 🖱️ Haciendo clic en la opción del perfil en ({option_x}, {option_y}).")
-                        pyautogui.moveTo(option_x, option_y, duration=0.5)
-                        pyautogui.click()
-                        
-                        time.sleep(2)
-                        print("            -> 🖱️ Buscando 'publicar.png'...")
-                        if pyautogui_service.find_and_click_humanly(["publicar.png"], confidence=0.8):
-                            print("               -> ✅ ¡Post republicado exitosamente!")
-                        else:
-                            print("               -> ⚠️ No se encontró el botón final para publicar.")
-                    else:
-                        print("            -> ⚠️ No se encontró el botón para seleccionar comunidad.")
-                else:
-                    print("         -> ⚠️ No se encontró el botón de republicar.")
-            else:
-                print("      -> ⚠️ No se encontró el botón de compartir.")
+            self._execute_repost_pyautogui_sequence(best_post['link'])
             
             print("\n   -> ✅ Interacción completada. Volviendo al feed principal...")
             self.driver.get("https://www.reddit.com/")
@@ -124,34 +69,102 @@ class RedditInteractionService:
 
         except Exception as e:
             print(f"   -> 🚨 Error durante la interacción de republicar desde el feed: {e}")
-            self.driver.get("https://www.reddit.com/") # Volver a la página de inicio en caso de error
+            self.driver.get("https://www.reddit.com/")
 
-    def _get_credential_id(self, db) -> int | None:
-        if self.credential_id:
-            return self.credential_id
+    def _select_best_post_from_feed(self) -> Optional[Dict[str, str]]:
+        """
+        Navega al feed, lo analiza con la IA y devuelve el mejor post.
+        """
+        print("   -> Navegando al feed principal...")
+        self.driver.get("https://www.reddit.com/")
+        time.sleep(10)
+
+        print("   -> Analizando el feed con IA...")
+        feed_service = FeedService(self.driver.page_source)
+        best_post = feed_service.get_best_post_by_ai()
+
+        if not best_post:
+            print("   -> No se pudo seleccionar una publicación. Abortando interacción.")
+            return None
+
+        print("\n   🎯 MEJOR PUBLICACIÓN SELECCIONADA POR IA:")
+        print(f"      -> Título: {best_post['title']}")
+        print(f"      -> Enlace: {best_post['link']}")
+        return best_post
+
+    def _execute_repost_pyautogui_sequence(self, post_link: str) -> bool:
+        """
+        Ejecuta la secuencia de clics con PyAutoGUI para republicar un post.
+        """
+        print(f"\n   -> 🚀 Navegando a la publicación seleccionada...")
+        self.driver.get(post_link)
+        time.sleep(10)
+
+        print("   -> 🖱️ Buscando 'compartir.png'...")
+        if not self.pyautogui_service.find_and_click_humanly(['compartir.png']):
+            print("      -> ⚠️ No se encontró el botón de compartir.")
+            return False
         
-        credential = db.query(Credential).filter(Credential.username == self.username).first()
-        if credential:
-            self.credential_id = credential.id
-            return self.credential_id
-        return None
-
-    def _like_post_with_pyautogui(self) -> bool:
-        print("👍 Intentando hacer 'upvote' con PyAutoGUI...")
-        try:
-            upvote_image_path = os.path.join(PathManager.get_img_folder(), "post_upvote_arrow.png")
-            if not os.path.exists(upvote_image_path): return False
-            pos = pyautogui.locateCenterOnScreen(upvote_image_path, confidence=0.8)
-            if pos:
-                HumanInteractionUtils.move_mouse_humanly(pos.x, pos.y)
-                pyautogui.click()
-                time.sleep(1)
-                return True
-            return False
-        except (ImageNotFoundException, Exception):
+        print("      -> ✅ Clic en Compartir. Esperando menú...")
+        time.sleep(2)
+        
+        print("      -> 🖱️ Buscando 'republicar.png'...")
+        if not self.pyautogui_service.find_and_click_humanly(['republicar.png']):
+            print("         -> ⚠️ No se encontró el botón de republicar.")
             return False
 
+        print("         -> ✅ Clic en Republicar. Esperando vista de publicación...")
+        time.sleep(10)
+
+        if not self._select_community_and_publish():
+            return False
+        
+        return True
+
+    def _select_community_and_publish(self) -> bool:
+        """
+        Busca 'select_community.png', escribe el nombre de usuario y publica.
+        """
+        print("         -> 🖱️ Buscando 'select_community.png'...")
+        img_path = os.path.join(PathManager.get_img_folder(), "select_community.png")
+        community_button_pos = pyautogui.locateCenterOnScreen(img_path, confidence=0.8)
+
+        if not community_button_pos:
+            print("            -> ⚠️ No se encontró el botón para seleccionar comunidad.")
+            return False
+
+        pyautogui.click(community_button_pos)
+        print("            -> ✅ Clic en Seleccionar Comunidad. Escribiendo perfil...")
+        time.sleep(1.5)
+        
+        target_profile = _user_prefixed(self.username)
+        pyautogui.write(target_profile, interval=0.1)
+        time.sleep(2.5)
+
+        option_x, option_y = community_button_pos.x, community_button_pos.y + 60
+        print(f"            -> 🖱️ Haciendo clic en la opción del perfil en ({option_x}, {option_y}).")
+        pyautogui.moveTo(option_x, option_y, duration=0.5)
+        pyautogui.click()
+        time.sleep(2)
+        
+        print("            -> 🖱️ Buscando 'publicar.png'...")
+        if self.pyautogui_service.find_and_click_humanly(["publicar.png"], confidence=0.8):
+            print("               -> ✅ ¡Post republicado exitosamente!")
+            print("                  -> ⏳ Esperando 10 segundos a que la página del nuevo post cargue...")
+            time.sleep(10)
+            print("                  -> 🚪 Cerrando la ventana/pestaña de republicación...")
+            pyautogui.hotkey('ctrl', 'w')
+            time.sleep(2)
+            return True
+        else:
+            print("               -> ⚠️ No se encontró el botón final para publicar.")
+            return False
+
+    # --- Flujo Principal de Upvote desde BD ---
     def upvote_from_database(self, interacted_post_ids_session: Set[str]):
+        """
+        Orquesta el flujo para dar upvote a un post aleatorio de la base de datos.
+        """
         print(f"\n--- 🎲 Iniciando interacción: Upvote desde BD para '{self.username}' ---")
         db = next(get_db_secondary())
         try:
@@ -160,12 +173,8 @@ class RedditInteractionService:
                 print(f"   -> ⚠️ No se encontró la credencial para el usuario '{self.username}'.")
                 return
 
-            random_post = db.query(Post).filter(
-                not_(Post.interacted_by_credential_ids.contains([credential_id])),
-                not_(Post.id.in_(list(interacted_post_ids_session)))
-            ).order_by(func.random()).first()
-            
-            if not random_post or not random_post.post_url:
+            random_post = self._get_random_post_from_db(db, credential_id, interacted_post_ids_session)
+            if not random_post:
                 print("   -> ✅ No hay posts nuevos disponibles para esta cuenta.")
                 return
 
@@ -192,8 +201,44 @@ class RedditInteractionService:
             db.rollback()
         finally:
             db.close()
+
+    def _get_credential_id(self, db: Session) -> Optional[int]:
+        if self.credential_id:
+            return self.credential_id
+        
+        credential = db.query(Credential).filter(Credential.username == self.username).first()
+        if credential:
+            self.credential_id = credential.id
+            return self.credential_id
+        return None
     
+    def _get_random_post_from_db(self, db: Session, cred_id: int, session_ids: Set[str]) -> Optional[Post]:
+        """
+        Consulta la base de datos y devuelve un post aleatorio que no ha sido interactuado.
+        """
+        return db.query(Post).filter(
+            not_(Post.interacted_by_credential_ids.contains([cred_id])),
+            not_(Post.id.in_(list(session_ids)))
+        ).order_by(func.random()).first()
+
+    # --- Acciones de Interacción Simples ---
+    def _like_post_with_pyautogui(self) -> bool:
+        """Intenta dar upvote a un post usando PyAutoGUI."""
+        print("👍 Intentando hacer 'upvote' con PyAutoGUI...")
+        try:
+            upvote_image_path = os.path.join(PathManager.get_img_folder(), "post_upvote_arrow.png")
+            pos = pyautogui.locateCenterOnScreen(upvote_image_path, confidence=0.8)
+            if pos:
+                HumanInteractionUtils.move_mouse_humanly(pos.x, pos.y)
+                pyautogui.click()
+                time.sleep(1)
+                return True
+            return False
+        except (ImageNotFoundException, Exception):
+            return False
+
     def prepare_page(self):
+        """Prepara la página después del login (refresca, escapa pop-ups)."""
         print("⏳ Esperando 10 segundos después del login...")
         time.sleep(10)
         self.driver.refresh()
@@ -204,14 +249,19 @@ class RedditInteractionService:
         except Exception: pass
 
     def scroll_page(self, direction: str = "down"):
+        """Hace scroll en la página."""
         scroll_amount = 800 if direction == "down" else -800
         self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
 
     def like_random_post(self):
-        if self._like_post_with_pyautogui(): print("  (✅ ¡ÉXITO! Se dio 'upvote' con PyAutoGUI.)\n")
-        else: print("  (❌ Falló el intento de 'upvote' con PyAutoGUI.)\n")
+        """Wrapper para dar like a un post."""
+        if self._like_post_with_pyautogui():
+            print("  (✅ ¡ÉXITO! Se dio 'upvote' con PyAutoGUI.)\n")
+        else:
+            print("  (❌ Falló el intento de 'upvote' con PyAutoGUI.)\n")
     
     def analizar_publicaciones_visibles(self) -> List[dict]:
+        """Analiza los posts visibles en la pantalla actual."""
         posts = []
         try:
             soup = BeautifulSoup(self.driver.page_source, 'lxml')
@@ -222,8 +272,10 @@ class RedditInteractionService:
                 posts.append(post_data)
         except Exception: pass
         return posts
-        
+
+    # --- Flujos de Cierre de Sesión ---
     def logout(self):
+        """Realiza un cierre de sesión estándar."""
         print("\n👋 Iniciando proceso de cierre de sesión...")
         try:
             self.driver.execute_script("document.getElementById('expand-user-drawer-button').click();")
@@ -233,43 +285,26 @@ class RedditInteractionService:
             print("✅ Cierre de sesión completado exitosamente.")
             print("   -> Cerrando la ventana del navegador con Ctrl+W...")
             pyautogui.hotkey('ctrl', 'w')
-            time.sleep(1) # Pequeña pausa para que la ventana se cierre
+            time.sleep(1)
         except Exception as e:
             print(f"🚨 Error durante el cierre de sesión: {e}")
 
     def logout_and_set_dark_mode(self):
-        """
-        Activa el modo oscuro y luego realiza el cierre de sesión.
-        Diseñado para ser usado al final del flujo de registro.
-        """
+        """Activa el modo oscuro y luego cierra la sesión."""
         print("\n👋 Iniciando proceso de cierre de sesión y activación de modo oscuro...")
         try:
-            # 1. Abrir el menú de usuario
-            print("   -> Abriendo el menú de usuario...")
             self.driver.execute_script("document.getElementById('expand-user-drawer-button').click();")
             time.sleep(2)
-
-            # 2. Activar el modo oscuro
-            print("   -> Activando modo oscuro...")
             self.driver.execute_script("document.getElementById('darkmode-list-item').click();")
-            time.sleep(2) # Espera para que el tema cambie
-
-            # 3. Volver a abrir el menú (puede que se cierre al cambiar de tema)
-            print("   -> Re-abriendo el menú de usuario...")
+            time.sleep(2)
             self.driver.execute_script("document.getElementById('expand-user-drawer-button').click();")
             time.sleep(2)
-
-            # 4. Hacer clic en 'Cerrar Sesión'
-            print("   -> Haciendo clic en 'Cerrar Sesión'...")
             self.driver.execute_script("document.getElementById('logout-list-item').click();")
             time.sleep(3)
-            
             print("✅ Modo oscuro activado y cierre de sesión completado.")
-
             print("   -> Cerrando la ventana del navegador con Ctrl+W...")
             pyautogui.hotkey('ctrl', 'w')
-            time.sleep(1) # Pequeña pausa para que la ventana se cierre
+            time.sleep(1)
         except Exception as e:
             print(f"🚨 Error durante el logout especial: {e}")
-            # Si algo falla, intenta un logout normal como fallback
             self.logout()
