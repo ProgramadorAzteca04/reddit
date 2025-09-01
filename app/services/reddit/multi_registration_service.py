@@ -26,7 +26,7 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
 
     successful_registrations = 0
     used_emails = set() # Para llevar registro de los correos ya usados (exitosos o fallidos)
-    pausa_duration = 240 # <-- ¡CAMBIO! Se inicializa la duración de la pausa aquí.
+    pausa_duration = 60 # <-- ¡CAMBIO! Se inicializa la duración de la pausa aquí.
 
     # Bucle principal: continúa hasta que se alcance el objetivo de registros
     while successful_registrations < count:
@@ -62,7 +62,7 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
                     print("\r                                          \r", end="")
                     
                     # <-- ¡CAMBIO! Se incrementa la duración para la siguiente pausa.
-                    pausa_duration += 60
+                    pausa_duration += 30
             else:
                 # Este caso ocurre si el correo fue rechazado por Reddit (error.jpg)
                 print(f"   -> 🛑 CORREO RECHAZADO: '{email_to_try}'. Se intentará con un nuevo correo.")

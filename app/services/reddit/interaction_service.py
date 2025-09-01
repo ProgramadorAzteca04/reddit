@@ -326,14 +326,15 @@ class RedditInteractionService:
     
     def _get_random_post_from_db(self, db: Session, cred_id: int, session_ids: Set[str]) -> Optional[Post]:
         """
-        Consulta la base de datos y devuelve un post aleatorio que no ha sido interactuado.
+        Consulta la base de datos y devuelve un post aleatorio que no ha sido interactuado
+        y que no fue creado por el propio usuario.
         """
         return db.query(Post).filter(
             not_(Post.interacted_by_credential_ids.contains([cred_id])),
-            not_(Post.id.in_(list(session_ids)))
+            not_(Post.id.in_(list(session_ids))),
+            Post.author != self.username
         ).order_by(func.random()).first()
-
-    # --- Acciones de Interacción Simples ---
+ 
     def _like_post_with_pyautogui(self) -> bool:
         """Intenta dar upvote a un post usando PyAutoGUI."""
         print("👍 Intentando hacer 'upvote' con PyAutoGUI...")
