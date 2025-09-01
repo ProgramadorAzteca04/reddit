@@ -1,3 +1,4 @@
+# app/services/reddit/multi_account_service.py
 import time
 from typing import List, Dict, Optional
 from app.models.reddit_models import Credential
@@ -11,17 +12,11 @@ def run_multi_login_flow(
     url: str, 
     window_title: str, 
     interaction_minutes: int,
-    upvote_from_database_enabled: bool # <-- Nuevo parámetro
+    upvote_from_database_enabled: bool,
+    repost_from_feed_enabled: bool # <-- PARÁMETRO AÑADIDO
 ):
     """
     Orquesta un flujo de login para múltiples cuentas, una tras otra.
-    
-    Para cada cuenta en la lista, este servicio:
-    1. Abre el navegador y realiza el login.
-    2. Ejecuta un bucle de interacción aleatoria.
-    3. Realiza el logout.
-    4. Cierra el navegador por completo.
-    5. Pasa a la siguiente cuenta.
     """
     print("\n" + "="*60)
     print(f"🚀 INICIANDO SERVICIO MULTI-CUENTA PARA {len(account_ids)} CUENTAS.")
@@ -29,7 +24,6 @@ def run_multi_login_flow(
 
     db = next(get_db_secondary())
     try:
-        # Obtenemos todas las credenciales de una vez para ser más eficientes
         accounts_from_db = db.query(Credential).filter(Credential.id.in_(account_ids)).all()
         account_map = {acc.id: acc for acc in accounts_from_db}
     finally:
@@ -56,7 +50,12 @@ def run_multi_login_flow(
             if driver and browser_manager:
                 interaction_service = RedditInteractionService(driver, username)
                 # Pasamos el nuevo parámetro al bucle de cada cuenta
-                run_interaction_loop(interaction_service, interaction_minutes, upvote_from_database_enabled)
+                run_interaction_loop(
+                    interaction_service, 
+                    interaction_minutes, 
+                    upvote_from_database_enabled,
+                    repost_from_feed_enabled # <-- PARÁMETRO PASADO
+                )
             else:
                 print(f"   -> 🚨 Falló el login para '{username}'. Pasando a la siguiente cuenta.")
 

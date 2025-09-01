@@ -93,6 +93,9 @@ def run_registration_flow(email: str, url: str) -> bool:
 
     except Exception as e:
         print(f"\n🚨 ERROR FATAL durante el flujo de registro: {e}")
+        print("   -> Intentando cerrar la ventana del navegador con Ctrl+W...")
+        pyautogui.hotkey('ctrl', 'w')
+        time.sleep(1)
         traceback.print_exc()
 
     finally:

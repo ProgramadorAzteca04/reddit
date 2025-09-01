@@ -1,5 +1,5 @@
 # app/api/v1/endpoints/reddit.py
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status, Depends
 from app.schemas.auth import LoginRequest, AutomationRequest, MultiLoginRequest, CreatePostRequest, MultiRegisterRequest
 from app.services.reddit.login_service import run_login_flow
 from app.services.reddit.registration_service import run_registration_flow
@@ -59,7 +59,8 @@ async def start_login(request: LoginRequest, background_tasks: BackgroundTasks):
         url=request.url,
         window_title=request.window_title,
         interaction_minutes=request.interaction_minutes,
-        upvote_from_database_enabled=request.upvote_from_database_enabled
+        upvote_from_database_enabled=request.upvote_from_database_enabled,
+        repost_from_feed_enabled=request.repost_from_feed_enabled
     )
     return {"message": "El proceso de login y navegación ha comenzado en segundo plano."}
 
@@ -90,9 +91,11 @@ async def start_multi_login(request: MultiLoginRequest, background_tasks: Backgr
         url=request.url,
         window_title=request.window_title,
         interaction_minutes=request.interaction_minutes,
-        upvote_from_database_enabled=request.upvote_from_database_enabled
+        upvote_from_database_enabled=request.upvote_from_database_enabled,
+        repost_from_feed_enabled=request.repost_from_feed_enabled
     )
     return {"message": "El proceso de login múltiple ha comenzado en segundo plano."}
+
 
 
 @router.get("/health")

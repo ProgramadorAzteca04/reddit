@@ -6,11 +6,13 @@ import random
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from .desktop_service import PyAutoGuiService
 from bs4 import BeautifulSoup
 from typing import List, Set
 from sqlalchemy.sql.expression import func
 from sqlalchemy import not_
-
+from .feed_service import FeedService, _user_prefixed
+from app.services.openai.content_generator_service import select_best_post_title
 from .desktop_service import PathManager, HumanInteractionUtils
 from app.db.database import get_db_secondary
 from app.models.reddit_models import Post, Credential
@@ -43,6 +45,86 @@ class RedditInteractionService:
         self.driver = driver
         self.username = username
         self.credential_id = None
+
+    def repost_best_post_from_feed(self):
+        """
+        Analiza el feed actual, usa la IA para seleccionar el mejor post y lo republica.
+        """
+        print("\n🤖 --- Iniciando Interacción: Republicar Mejor Post del Feed --- 🤖")
+        try:
+            # 1. Navegar al feed principal y analizarlo
+            print("   -> Navegando al feed principal...")
+            self.driver.get("https://www.reddit.com/")
+            time.sleep(10)
+
+            print("   -> Analizando el feed con IA...")
+            feed_service = FeedService(self.driver.page_source)
+            best_post = feed_service.get_best_post_by_ai()
+
+            if not best_post:
+                print("   -> No se pudo seleccionar una publicación. Abortando interacción.")
+                return
+
+            print("\n   🎯 MEJOR PUBLICACIÓN SELECCIONADA POR IA:")
+            print(f"      -> Título: {best_post['title']}")
+            print(f"      -> Enlace: {best_post['link']}")
+            
+            # 2. Navegar al post y realizar la secuencia de clics
+            print(f"\n   -> 🚀 Navegando a la publicación seleccionada...")
+            self.driver.get(best_post['link'])
+            time.sleep(10)
+
+            pyautogui_service = PyAutoGuiService()
+            print("   -> 🖱️ Buscando 'compartir.png'...")
+            if pyautogui_service.find_and_click_humanly(['compartir.png']):
+                print("      -> ✅ Clic en Compartir. Esperando menú...")
+                time.sleep(2)
+                
+                print("      -> 🖱️ Buscando 'republicar.png'...")
+                if pyautogui_service.find_and_click_humanly(['republicar.png']):
+                    print("         -> ✅ Clic en Republicar. Esperando vista de publicación...")
+                    time.sleep(10)
+
+                    # 3. Seleccionar comunidad y publicar
+                    print("         -> 🖱️ Buscando 'select_community.png'...")
+                    img_path = os.path.join(PathManager.get_img_folder(), "select_community.png")
+                    community_button_pos = pyautogui.locateCenterOnScreen(img_path, confidence=0.8)
+
+                    if community_button_pos:
+                        pyautogui.click(community_button_pos)
+                        print("            -> ✅ Clic en Seleccionar Comunidad. Escribiendo perfil...")
+                        time.sleep(1.5)
+                        target_profile = _user_prefixed(self.username) # Usamos el username del servicio
+                        pyautogui.write(target_profile, interval=0.1)
+                        time.sleep(2.5)
+
+                        option_x = community_button_pos.x
+                        option_y = community_button_pos.y + 60
+                        
+                        print(f"            -> 🖱️ Haciendo clic en la opción del perfil en ({option_x}, {option_y}).")
+                        pyautogui.moveTo(option_x, option_y, duration=0.5)
+                        pyautogui.click()
+                        
+                        time.sleep(2)
+                        print("            -> 🖱️ Buscando 'publicar.png'...")
+                        if pyautogui_service.find_and_click_humanly(["publicar.png"], confidence=0.8):
+                            print("               -> ✅ ¡Post republicado exitosamente!")
+                        else:
+                            print("               -> ⚠️ No se encontró el botón final para publicar.")
+                    else:
+                        print("            -> ⚠️ No se encontró el botón para seleccionar comunidad.")
+                else:
+                    print("         -> ⚠️ No se encontró el botón de republicar.")
+            else:
+                print("      -> ⚠️ No se encontró el botón de compartir.")
+            
+            print("\n   -> ✅ Interacción completada. Volviendo al feed principal...")
+            self.driver.get("https://www.reddit.com/")
+            time.sleep(5)
+
+        except Exception as e:
+            print(f"   -> 🚨 Error durante la interacción de republicar desde el feed: {e}")
+            self.driver.get("https://www.reddit.com/") # Volver a la página de inicio en caso de error
 
     def _get_credential_id(self, db) -> int | None:
         if self.credential_id:

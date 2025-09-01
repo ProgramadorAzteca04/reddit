@@ -10,7 +10,8 @@ class LoginRequest(BaseModel):
     url: str = Field("https://www.reddit.com/login", description="URL de login.")
     window_title: str = Field("Reddit", description="Título de la ventana para PyAutoGUI.")
     interaction_minutes: int = Field(5, description="Duración de la interacción.")
-    upvote_from_database_enabled: bool = Field(True, description="Habilita o deshabilita la interacción 'upvote_from_database'.")
+    upvote_from_database_enabled: bool = Field(True, description="...")
+    repost_from_feed_enabled: bool = Field(False, description="Habilita la interacción de analizar el feed con IA y republicar el mejor post.")
 
 class ElementLocator(BaseModel):
     images: List[str]
@@ -24,7 +25,8 @@ class MultiLoginRequest(BaseModel):
     url: str = Field("https://www.reddit.com/login", description="URL de login para todas las cuentas.")
     window_title: str = Field("Reddit", description="Título de la ventana para PyAutoGUI.")
     interaction_minutes: int = Field(5, description="Duración de la interacción por cada cuenta.")
-    upvote_from_database_enabled: bool = Field(True, description="Habilita o deshabilita la interacción 'upvote_from_database'.")
+    upvote_from_database_enabled: bool = Field(True, description="...")
+    repost_from_feed_enabled: bool = Field(False, description="Habilita la interacción de analizar el feed con IA y republicar el mejor post.")
 
 class CreatePostRequest(BaseModel):
     credential_id: int = Field(..., description="ID de la credencial a utilizar para crear el post.")
@@ -33,3 +35,6 @@ class MultiRegisterRequest(BaseModel):
     count: int = Field(..., gt=0, description="Número de cuentas a registrar.")
     file_path: str = Field("correos.txt", description="Ruta al archivo de texto con los correos.")
     url: str = Field("https://www.reddit.com/register/", description="URL de registro de Reddit.")
+
+class ScrapeFeedRequest(BaseModel):
+    credential_id: int = Field(..., description="ID de la credencial a utilizar para analizar el feed.")

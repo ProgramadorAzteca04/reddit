@@ -186,3 +186,50 @@ def generate_post_content(model: str = "gpt-3.5-turbo", temperature: float = 0.7
     except Exception as e:
         print(f"\n🚨 ERROR FATAL al generar contenido con OpenAI: {e}")
         return {"title": "Error de Generación", "body": f"No se pudo generar el contenido: {e}"}
+    
+def select_best_post_title(titles: list[str]) -> str | None:
+    """
+    Usa OpenAI para analizar una lista de títulos de Reddit y seleccionar el más interesante,
+    evitando explícitamente temas íntimos o sexuales.
+    """
+    if not titles:
+        return None
+
+    print(f"\n🧠 Enviando {len(titles)} títulos a OpenAI para su evaluación...")
+
+    formatted_titles = "\n".join(f"{i+1}. {title}" for i, title in enumerate(titles))
+
+    # --- PROMPT MEJORADO CON REGLAS ESTRICTAS ---
+    prompt = f"""
+    A continuación se presenta una lista de títulos de publicaciones de un feed de Reddit.
+    Tu tarea es actuar como un curador de contenido y seleccionar el título que consideres más interesante y de interés general.
+
+    **REGLAS ESTRICTAS DE FILTRADO:**
+    1.  **NO SELECCIONAR** títulos que contengan temas sexuales, eróticos, románticos o íntimos.
+    2.  **EVITAR** preguntas sobre relaciones de pareja, experiencias personales de citas o temas similares.
+    3.  **PRIORIZAR** temas neutrales, curiosidades, debates divertidos o noticias de interés general.
+
+    Lista de Títulos:
+    {formatted_titles}
+
+    Por favor, responde únicamente con el texto exacto del título que has seleccionado y que cumple con todas las reglas, sin números, comillas ni ninguna otra palabra adicional.
+    """
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Eres un asistente experto en análisis y filtrado de contenido de redes sociales, con un fuerte enfoque en la seguridad de la marca y la decencia."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.5,
+            max_tokens=100,
+        )
+        
+        selected_title = response.choices[0].message.content.strip()
+        print(f"   -> ✅ OpenAI ha seleccionado el título: '{selected_title}'")
+        return selected_title
+
+    except Exception as e:
+        print(f"   -> 🚨 Error al comunicarse con OpenAI para seleccionar un título: {e}")
+        return titles[0] if titles else None
