@@ -48,21 +48,46 @@ async def multi_register_accounts(request: MultiRegisterRequest, background_task
 
 @router.post("/login", status_code=202)
 async def start_login(request: LoginRequest, background_tasks: BackgroundTasks):
-    """
-    Inicia el proceso de inicio de sesión para una sola cuenta por su ID.
-    """
     print(f"🚀 Petición recibida para login del usuario con ID: {request.credential_id}")
     
     background_tasks.add_task(
         run_login_flow,
-        credential_id=request.credential_id, # <-- Pasa el ID
+        credential_id=request.credential_id,
         url=request.url,
         window_title=request.window_title,
         interaction_minutes=request.interaction_minutes,
         upvote_from_database_enabled=request.upvote_from_database_enabled,
-        repost_from_feed_enabled=request.repost_from_feed_enabled
+        repost_from_feed_enabled=request.repost_from_feed_enabled,
+        comment_on_feed_enabled=request.comment_on_feed_enabled # <-- NUEVO PARÁMETRO
     )
     return {"message": "El proceso de login y navegación ha comenzado en segundo plano."}
+
+@router.post("/create-post", status_code=202)
+async def start_create_post(request: CreatePostRequest, background_tasks: BackgroundTasks):
+    print(f"🚀 Petición recibida para crear un post con la credencial ID: {request.credential_id}")
+    
+    background_tasks.add_task(
+        execute_create_post_flow,
+        credential_id=request.credential_id
+    )
+    return {"message": "El proceso para crear una publicación ha comenzado en segundo plano."}
+
+@router.post("/multi-login", status_code=202)
+async def start_multi_login(request: MultiLoginRequest, background_tasks: BackgroundTasks):
+    print(f"🚀 Petición recibida para un login múltiple de {len(request.account_ids)} cuentas.")
+    
+    background_tasks.add_task(
+        run_multi_login_flow,
+        account_ids=request.account_ids,
+        url=request.url,
+        window_title=request.window_title,
+        interaction_minutes=request.interaction_minutes,
+        upvote_from_database_enabled=request.upvote_from_database_enabled,
+        repost_from_feed_enabled=request.repost_from_feed_enabled,
+        comment_on_feed_enabled=request.comment_on_feed_enabled # <-- NUEVO PARÁMETRO
+    )
+    return {"message": "El proceso de login múltiple ha comenzado en segundo plano."}
+
 
 @router.post("/create-post", status_code=202)
 async def start_create_post(request: CreatePostRequest, background_tasks: BackgroundTasks):
@@ -77,25 +102,6 @@ async def start_create_post(request: CreatePostRequest, background_tasks: Backgr
         credential_id=request.credential_id  # <-- Se pasa solo el ID
     )
     return {"message": "El proceso para crear una publicación ha comenzado en segundo plano."}
-
-@router.post("/multi-login", status_code=202)
-async def start_multi_login(request: MultiLoginRequest, background_tasks: BackgroundTasks):
-    """
-    Inicia un bucle de login e interacción para una lista de IDs de cuentas.
-    """
-    print(f"🚀 Petición recibida para un login múltiple de {len(request.account_ids)} cuentas.")
-    
-    background_tasks.add_task(
-        run_multi_login_flow,
-        account_ids=request.account_ids, # <-- Pasa la lista de IDs
-        url=request.url,
-        window_title=request.window_title,
-        interaction_minutes=request.interaction_minutes,
-        upvote_from_database_enabled=request.upvote_from_database_enabled,
-        repost_from_feed_enabled=request.repost_from_feed_enabled
-    )
-    return {"message": "El proceso de login múltiple ha comenzado en segundo plano."}
-
 
 
 @router.get("/health")

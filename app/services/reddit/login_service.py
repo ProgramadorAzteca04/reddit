@@ -60,7 +60,7 @@ def perform_login_and_setup(username: str, password: str, url: str, window_title
             browser_manager.quit_driver()
         return None, None
 
-def run_interaction_loop(service: RedditInteractionService, duration_minutes: int, upvote_from_database_enabled: bool, repost_from_feed_enabled: bool):
+def run_interaction_loop(service: RedditInteractionService, duration_minutes: int, upvote_from_database_enabled: bool, repost_from_feed_enabled: bool, comment_on_feed_enabled: bool):
     """
     Ejecuta un bucle de interacciones aleatorias...
     """
@@ -74,7 +74,8 @@ def run_interaction_loop(service: RedditInteractionService, duration_minutes: in
         "like_random_post": service.like_random_post,
         "analizar_publicaciones_visibles": service.analizar_publicaciones_visibles,
         "upvote_from_database": lambda: service.upvote_from_database(interacted_post_ids_this_session),
-        "repost_best_post_from_feed": service.repost_best_post_from_feed
+        "repost_best_post_from_feed": service.repost_best_post_from_feed,
+         "comment_on_best_post_from_feed": service.comment_on_best_post_from_feed
     }
     
     action_pool = ["scroll_page"] * 5 + ["like_random_post"] * 2
@@ -86,6 +87,10 @@ def run_interaction_loop(service: RedditInteractionService, duration_minutes: in
     if repost_from_feed_enabled:
         action_pool += ["repost_best_post_from_feed"] * 2
         print("   -> Interacción 'repost_best_post_from_feed' HABILITADA.")
+    
+    if comment_on_feed_enabled: # <-- LÓGICA PARA NUEVA ACCIÓN
+        action_pool += ["comment_on_best_post_from_feed"] * 3
+        print("   -> Interacción 'comment_on_best_post_from_feed' HABILITADA.")
     
     print("\n" + "="*50)
     print(f"🤖 INICIANDO NAVEGACIÓN DINÁMICA para '{service.username}' 🤖")
@@ -132,7 +137,8 @@ def run_login_flow(
     window_title: str, 
     interaction_minutes: int,
     upvote_from_database_enabled: bool,
-    repost_from_feed_enabled: bool  # <-- PARÁMETRO AÑADIDO
+    repost_from_feed_enabled: bool,
+    comment_on_feed_enabled: bool
 ):
     """
     Orquesta el login y la interacción para una cuenta, obteniendo sus
@@ -165,7 +171,8 @@ def run_login_flow(
                 interaction_service, 
                 interaction_minutes, 
                 upvote_from_database_enabled,
-                repost_from_feed_enabled  # <-- PARÁMETRO PASADO
+                repost_from_feed_enabled,
+                comment_on_feed_enabled
             )
     except Exception as e:
         print(f"\n🚨 ERROR FATAL en el flujo principal para '{username}': {e}")

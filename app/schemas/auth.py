@@ -10,8 +10,9 @@ class LoginRequest(BaseModel):
     url: str = Field("https://www.reddit.com/login", description="URL de login.")
     window_title: str = Field("Reddit", description="Título de la ventana para PyAutoGUI.")
     interaction_minutes: int = Field(5, description="Duración de la interacción.")
-    upvote_from_database_enabled: bool = Field(True, description="...")
-    repost_from_feed_enabled: bool = Field(False, description="Habilita la interacción de analizar el feed con IA y republicar el mejor post.")
+    upvote_from_database_enabled: bool = Field(True, description="Habilita dar upvote a posts guardados en la BD.")
+    repost_from_feed_enabled: bool = Field(False, description="Habilita analizar el feed y republicar el mejor post.")
+    comment_on_feed_enabled: bool = Field(False, description="Habilita analizar el feed, generar un comentario y publicarlo.")
 
 class ElementLocator(BaseModel):
     images: List[str]
@@ -27,6 +28,8 @@ class MultiLoginRequest(BaseModel):
     interaction_minutes: int = Field(5, description="Duración de la interacción por cada cuenta.")
     upvote_from_database_enabled: bool = Field(True, description="...")
     repost_from_feed_enabled: bool = Field(False, description="Habilita la interacción de analizar el feed con IA y republicar el mejor post.")
+    comment_on_feed_enabled: bool = Field(False, description="Habilita analizar el feed, generar un comentario y publicarlo.")
+
 
 class CreatePostRequest(BaseModel):
     credential_id: int = Field(..., description="ID de la credencial a utilizar para crear el post.")

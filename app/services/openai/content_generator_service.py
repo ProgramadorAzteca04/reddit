@@ -233,3 +233,48 @@ def select_best_post_title(titles: list[str]) -> str | None:
     except Exception as e:
         print(f"   -> 🚨 Error al comunicarse con OpenAI para seleccionar un título: {e}")
         return titles[0] if titles else None
+    
+def generate_comment_for_post(post_title: str) -> str:
+    """
+    Genera un comentario relevante y de aspecto humano para un post de Reddit.
+    """
+    print(f"\n🧠 Generando un comentario para el post: '{post_title}'...")
+
+    tonos = ["de acuerdo y aportando algo más", "ligeramente en desacuerdo pero de forma respetuosa", "haciendo una pregunta relacionada", "compartiendo una experiencia personal breve"]
+    estilos = ["directo y corto", "un poco más elaborado, con una o dos frases", "informal, usando jerga de internet"]
+    
+    tono_elegido = random.choice(tonos)
+    estilo_elegido = random.choice(estilos)
+
+    prompt = f"""
+    Eres un comentarista de foros experto en participar en conversaciones de forma auténtica.
+    Tu objetivo es escribir un comentario que parezca escrito por una persona real, no por una IA.
+
+    El título de la publicación es: "{post_title}"
+
+    Tu tarea es generar un único comentario que sea relevante para este título.
+    Sigue estas reglas:
+    1.  **Tono y Estilo**: El comentario debe ser {tono_elegido} y tener un estilo {estilo_elegido}.
+    2.  **Naturalidad**: Usa un lenguaje casual. Puedes usar alguna falta de ortografía menor o error de tipeo intencional si crees que lo hace más humano (ej. "q" en vez de "que", omitir una tilde).
+    3.  **Brevedad**: El comentario debe ser corto, como máximo dos frases.
+    4.  **No Emojis**: No uses emojis.
+    5.  **Sin IA**: No menciones nada sobre ser una IA, ni temas de tecnología o programación.
+
+    Responde únicamente con el texto del comentario, sin comillas ni texto adicional.
+    """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Eres un asistente que genera comentarios para redes sociales que parecen escritos por humanos."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.8,
+            max_tokens=80,
+        )
+        comment = response.choices[0].message.content.strip()
+        print(f"   -> ✅ Comentario generado: '{comment}'")
+        return comment
+    except Exception as e:
+        print(f"   -> 🚨 Error al generar comentario: {e}")
+        return "Estoy totalmente de acuerdo con esto."

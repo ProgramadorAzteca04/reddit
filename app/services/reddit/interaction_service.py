@@ -3,6 +3,7 @@ import time
 import pyautogui
 import os
 import random
+import pyperclip
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -12,7 +13,7 @@ from typing import List, Set, Optional, Dict
 from sqlalchemy.sql.expression import func
 from sqlalchemy import not_
 from .feed_service import FeedService, _user_prefixed
-from app.services.openai.content_generator_service import select_best_post_title
+from app.services.openai.content_generator_service import generate_comment_for_post
 from .desktop_service import PathManager, HumanInteractionUtils
 from app.db.database import get_db_secondary
 from app.models.reddit_models import Post, Credential
@@ -22,6 +23,68 @@ try:
     from pyscreeze import ImageNotFoundException
 except ImportError:
     ImageNotFoundException = pyautogui.ImageNotFoundException
+
+COMMENT_TRIGGER_JS = """
+function deepQuerySelector(root, selector) {
+    const el = root.querySelector(selector);
+    if (el) { return el; }
+    const children = root.querySelectorAll("*");
+    for (const child of children) {
+        if (child.shadowRoot) {
+            const found = deepQuerySelector(child.shadowRoot, selector);
+            if (found) { return found; }
+        }
+    }
+    return null;
+}
+const triggerButton = deepQuerySelector(document, 'button[name="comments-action-button"]');
+if (triggerButton) {
+    console.log("✅ Botón de acción de comentario encontrado, haciendo clic...");
+    triggerButton.click();
+} else {
+    console.log("❌ No se encontró el botón de acción de comentario.");
+}
+"""
+
+COMMENT_FOCUS_JS = """
+function deepQuerySelector(root, selector) {
+    const el = root.querySelector(selector);
+    if (el) return el;
+    for (const child of root.querySelectorAll("*")) {
+        if (child.shadowRoot) {
+            const found = deepQuerySelector(child.shadowRoot, selector);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+const editor = deepQuerySelector(document, 'div[contenteditable="true"]');
+if (editor) {
+    editor.focus();
+}
+"""
+
+COMMENT_SUBMIT_JS = """
+// Script corregido para usar un selector más específico para el botón de publicar.
+function deepQuerySelector(root, selector) {
+    const el = root.querySelector(selector);
+    if (el) return el;
+    for (const child of root.querySelectorAll("*")) {
+        if (child.shadowRoot) {
+            const found = deepQuerySelector(child.shadowRoot, selector);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+const submitButton = deepQuerySelector(document, 'button[slot="submit-button"][type="submit"]');
+if (submitButton) {
+    console.log("✅ Botón 'Comentar' (submit) encontrado, haciendo clic...");
+    submitButton.click();
+} else {
+    console.log("❌ No se encontró el botón 'Comentar' (submit).");
+}
+"""
 
 def analizar_post_html(post_html: BeautifulSoup):
     titulo_tag = post_html.find('a', {'slot': 'title'})
@@ -49,6 +112,55 @@ class RedditInteractionService:
         self.username = username
         self.credential_id: Optional[int] = None
         self.pyautogui_service = PyAutoGuiService()
+
+    def comment_on_best_post_from_feed(self):
+        print("\n🤖 --- Iniciando Interacción: Comentar en el Mejor Post del Feed --- 🤖")
+        try:
+            best_post = self._select_best_post_from_feed()
+            if not best_post:
+                return
+
+            comment_text = generate_comment_for_post(best_post['title'])
+            
+            if self._execute_comment_paste_sequence(best_post['link'], comment_text):
+                print("   -> ✅ Interacción de comentario completada exitosamente.")
+            else:
+                print("   -> ⚠️  La interacción de comentario no pudo completarse.")
+
+            print("   -> Volviendo al feed principal...")
+            self.driver.get("https://www.reddit.com/")
+            time.sleep(5)
+
+        except Exception as e:
+            print(f"   -> 🚨 Error durante la interacción de comentar desde el feed: {e}")
+            self.driver.get("https://www.reddit.com/")
+
+    def _execute_comment_paste_sequence(self, post_link: str, comment: str) -> bool:
+        print(f"\n   -> 🚀 Navegando a la publicación para comentar...")
+        self.driver.get(post_link)
+        time.sleep(10)
+
+        print("   -> 🖱️ Habilitando el campo de comentario con JS...")
+        self.driver.execute_script(COMMENT_TRIGGER_JS)
+        time.sleep(2) # Pausa para que el editor aparezca
+
+        print("   -> 📋 Copiando comentario al portapapeles...")
+        pyperclip.copy(comment)
+
+        print("   -> ✍️ Enfocando editor de comentarios con JS...")
+        self.driver.execute_script(COMMENT_FOCUS_JS)
+        
+        print(f"      -> ✅ Editor enfocado. Pegando comentario: '{comment}'")
+        time.sleep(1)
+        pyautogui.hotkey('ctrl', 'v')
+        time.sleep(3)
+
+        print("   -> 🖱️ Publicando comentario con Selenium/JS...")
+        self.driver.execute_script(COMMENT_SUBMIT_JS)
+            
+        print("      -> ✅ ¡Comentario publicado exitosamente!")
+        time.sleep(5)
+        return True
 
     # --- Flujo Principal de Republicación ---
     def repost_best_post_from_feed(self):
