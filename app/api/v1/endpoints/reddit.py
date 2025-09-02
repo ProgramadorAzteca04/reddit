@@ -6,6 +6,8 @@ from app.services.reddit.registration_service import run_registration_flow
 from app.services.reddit.post_creator_service import execute_create_post_flow
 from app.services.reddit.multi_account_service import run_multi_login_flow
 from app.services.reddit import multi_registration_service
+from app.schemas.auth import CommentToPostRequest
+from app.services.reddit.comment_service import scrape_and_store_comment_as_post
 
 router = APIRouter()
 
@@ -100,6 +102,29 @@ async def start_create_post(request: CreatePostRequest, background_tasks: Backgr
         credential_id=request.credential_id  # <-- Se pasa solo el ID
     )
     return {"message": "El proceso para crear una publicación ha comenzado en segundo plano."}
+
+@router.post("/comment-to-post", summary="Extraer Comentario y Guardar como Post")
+async def store_comment_as_post(request: CommentToPostRequest, background_tasks: BackgroundTasks):
+    """
+    Inicia un proceso en segundo plano para hacer scraping de un comentario específico de Reddit,
+    extraer su información y guardarla como una nueva entrada en la tabla 'posts'.
+    
+    - **url**: URL directa al comentario de Reddit.
+    """
+    try:
+        print(f"🚀 Petición recibida para procesar el comentario de la URL: {request.url}")
+        
+        # Ejecuta la tarea de scraping en segundo plano
+        background_tasks.add_task(
+            scrape_and_store_comment_as_post,
+            url=request.url
+        )
+        
+        return {"message": "Proceso de extracción de comentario iniciado en segundo plano. Revisa la consola para ver el progreso."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/health")

@@ -39,3 +39,6 @@ class MultiRegisterRequest(BaseModel):
 
 class ScrapeFeedRequest(BaseModel):
     credential_id: int = Field(..., description="ID de la credencial a utilizar para analizar el feed.")
+
+class CommentToPostRequest(BaseModel):
+    url: str = Field(..., description="URL del comentario de Reddit a procesar.")

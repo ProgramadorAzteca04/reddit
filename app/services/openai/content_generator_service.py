@@ -34,7 +34,7 @@ def _generate_random_topic(client: OpenAI) -> str:
         Responde únicamente con la frase del tema, sin comillas ni texto adicional.
         """
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[{"role": "user", "content": prompt_tema}],
             temperature=0.8,
             max_tokens=50,
@@ -47,7 +47,7 @@ def _generate_random_topic(client: OpenAI) -> str:
         # En caso de error, devolvemos un tema seguro por defecto
         return "cuál es el mejor consejo financiero que has recibido"
 
-def generate_post_content(model: str = "gpt-3.5-turbo", temperature: float = 0.75) -> dict:
+def generate_post_content(model: str = "gpt-4.1", temperature: float = 0.75) -> dict:
     """
     Genera contenido para Reddit de forma autónoma: primero genera un tema
     y luego crea una publicación sobre él, evitando siempre temas de IA.
@@ -217,7 +217,7 @@ def select_best_post_title(titles: list[str]) -> str | None:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": "Eres un asistente experto en análisis y filtrado de contenido de redes sociales, con un fuerte enfoque en la seguridad de la marca y la decencia."},
                 {"role": "user", "content": prompt}
@@ -264,7 +264,7 @@ def generate_comment_for_post(post_title: str) -> str:
     """
     try:
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4.1",
             messages=[
                 {"role": "system", "content": "Eres un asistente que genera comentarios para redes sociales que parecen escritos por humanos."},
                 {"role": "user", "content": prompt}
