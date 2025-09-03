@@ -9,6 +9,7 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
     Orquesta el registro de múltiples cuentas.
     Si un correo es rechazado, lo descarta y prueba con uno nuevo hasta
     alcanzar el número de registros exitosos solicitados.
+    Aplica una pausa incremental después de cada intento (exitoso o fallido).
     """
     print("\n" + "="*60)
     print(f"🚀 INICIANDO SERVICIO DE REGISTRO MÚLTIPLE | OBJETIVO: {count} CUENTAS.")
@@ -25,22 +26,21 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
         return {"status": "error", "message": f"Archivo no encontrado: {file_path}"}
 
     successful_registrations = 0
-    used_emails = set() # Para llevar registro de los correos ya usados (exitosos o fallidos)
-    pausa_duration = 60 # <-- ¡CAMBIO! Se inicializa la duración de la pausa aquí.
+    used_emails = set()
+    # <-- 1. CAMBIO: El tiempo de espera inicial ahora es de 240 segundos.
+    pausa_duration = 240
 
     # Bucle principal: continúa hasta que se alcance el objetivo de registros
     while successful_registrations < count:
         
-        # Filtra los correos disponibles que aún no se han intentado
         available_emails = [email for email in all_emails if email not in used_emails]
 
         if not available_emails:
             print("   -> 🛑 Se han agotado todos los correos del archivo. No se pueden realizar más registros.")
             break
 
-        # Selecciona un correo aleatorio de la lista de disponibles
         email_to_try = random.choice(available_emails)
-        used_emails.add(email_to_try) # Lo marca como usado para no volver a seleccionarlo
+        used_emails.add(email_to_try)
 
         print(f"\n--- ⏳ INTENTO DE REGISTRO #{successful_registrations + 1} | Usando correo: '{email_to_try}' ---")
         
@@ -50,27 +50,26 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
             if success:
                 successful_registrations += 1
                 print(f"   -> ✅ REGISTRO EXITOSO para '{email_to_try}'")
-                
-                # Si aún no hemos alcanzado el objetivo, hacemos la pausa
-                if successful_registrations < count:
-                    # --- BUCLE DE CONTEO REGRESIVO ---
-                    print(f"\n   -> ⏸️  Pausa de {pausa_duration} segundos antes del siguiente registro...")
-                    for i in range(pausa_duration, 0, -1):
-                        # Imprime el contador en la misma línea
-                        print(f"\r      Siguiente intento en {i} segundos...  ", end="", flush=True)
-                        time.sleep(1)
-                    print("\r                                          \r", end="")
-                    
-                    # <-- ¡CAMBIO! Se incrementa la duración para la siguiente pausa.
-                    pausa_duration += 30
             else:
-                # Este caso ocurre si el correo fue rechazado por Reddit (error.jpg)
-                print(f"   -> 🛑 CORREO RECHAZADO: '{email_to_try}'. Se intentará con un nuevo correo.")
-                time.sleep(5) # Pequeña pausa antes del siguiente intento
+                # Si el correo fue rechazado, simplemente lo informamos. La pausa se manejará más abajo.
+                print(f"   -> 🛑 CORREO RECHAZADO: '{email_to_try}'.")
 
         except Exception as e:
+            # Si ocurre un error inesperado, lo informamos. La pausa se manejará más abajo.
             print(f"   -> 🚨 ERROR INESPERADO en el flujo para '{email_to_try}': {e}")
-            time.sleep(20) # Pausa más larga si hay un error grave
+
+        # <-- 2. NUEVA LÓGICA: La pausa se unifica y se ejecuta aquí después de CADA intento.
+        # Se activa solo si aún no hemos alcanzado el objetivo final de registros.
+        if successful_registrations < count:
+            print(f"\n   -> ⏸️  Pausa de {pausa_duration} segundos antes del siguiente intento...")
+            for i in range(pausa_duration, 0, -1):
+                # Imprime el contador en la misma línea
+                print(f"\r      Siguiente intento en {i} segundos...  ", end="", flush=True)
+                time.sleep(1)
+            print("\r                                          \r", end="") # Limpia la línea del contador
+            
+            # <-- 3. CAMBIO: El incremento ahora es de 60 segundos para la siguiente pausa.
+            pausa_duration += 60
 
     # --- Actualización final del archivo de correos ---
     final_emails_to_keep = [email for email in all_emails if email not in used_emails]
@@ -78,7 +77,7 @@ def run_multi_registration_flow(count: int, file_path: str, url: str):
         with open(file_path, 'w') as f:
             for email in final_emails_to_keep:
                 f.write(email + "\n")
-        print(f"\n   -> 💾 Archivo '{file_path}' actualizado. Se eliminaron {len(used_emails)} correos.")
+        print(f"\n   -> 💾 Archivo '{file_path}' actualizado. Se eliminaron {len(used_emails)} correos usados.")
     except Exception as e:
         print(f"   -> 🚨 ERROR al actualizar el archivo de correos: {e}")
 
