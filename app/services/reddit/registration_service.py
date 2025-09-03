@@ -6,6 +6,7 @@ import pyperclip
 import pyautogui
 from .desktop_service import PyAutoGuiService, HumanInteractionUtils, DesktopUtils
 from .browser_service import BrowserManager
+from .proxy_service import ProxyManager
 from app.services.email_reader_service import get_latest_verification_code
 from app.db.database import get_db_secondary
 from app.models.reddit_models import Credential
@@ -13,14 +14,21 @@ from .interaction_service import RedditInteractionService
 
 def run_registration_flow(email: str, url: str) -> bool:
     """
-    Flujo principal que orquesta el registro.
+    Flujo principal que orquesta el registro usando un proxy aleatorio.
     Devuelve True si el registro fue exitoso, False si el correo es rechazado.
     """
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     DEBUGGING_PORT = "9223"
     WINDOW_TITLE = "Reddit"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
-    browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT)
+    
+    # --- Integración del Proxy Manager ---
+    proxy_manager = ProxyManager()
+    proxy = proxy_manager.get_random_proxy()
+    user_agent = proxy_manager.get_random_user_agent()
+    # -----------------------------------
+
+    browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT, proxy=proxy, user_agent=user_agent)
     pyautogui_service = PyAutoGuiService()
     
     username = ""
@@ -84,7 +92,7 @@ def run_registration_flow(email: str, url: str) -> bool:
             db.add(Credential(username=username, password=password, email=email))
             db.commit()
             print("✅ Credenciales guardadas exitosamente.")
-            registration_successful = True # Marcar como exitoso SOLO si se guarda en BD
+            registration_successful = True
         except Exception as db_error:
             print(f"🚨 ERROR al guardar credenciales: {db_error}")
             db.rollback()
@@ -101,11 +109,9 @@ def run_registration_flow(email: str, url: str) -> bool:
     finally:
         if registration_successful and driver:
             print("\n--- Finalizando sesión de registro ---")
-            print("   -> ⏳ Esperando 10 segundos antes de refrescar...")
             time.sleep(10)
-            print("   -> 🔄 Refrescando la página...")
             driver.refresh()
-            time.sleep(5) # Pausa para que cargue la página después de refrescar
+            time.sleep(5)
             
             try:
                 interaction_service = RedditInteractionService(driver, username)
@@ -114,7 +120,7 @@ def run_registration_flow(email: str, url: str) -> bool:
                 print(f"   -> ⚠️ Error durante el proceso de cierre final: {final_e}")
         
         if browser_manager:
-            browser_manager.quit_driver() # Cierra el navegador aquí
+            browser_manager.quit_driver()
         
         print("\nℹ️  El script de registro ha finalizado.")
         return registration_successful

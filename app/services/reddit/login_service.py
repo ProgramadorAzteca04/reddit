@@ -7,17 +7,24 @@ from typing import Optional, Tuple
 from selenium import webdriver
 from .desktop_service import PyAutoGuiService, DesktopUtils, HumanInteractionUtils
 from .browser_service import BrowserManager
+from .proxy_service import ProxyManager
 from .interaction_service import RedditInteractionService
 from app.db.database import get_db_secondary
 from app.models.reddit_models import Credential
 
 def perform_login_and_setup(username: str, password: str, url: str, window_title: str) -> Tuple[Optional[webdriver.Chrome], Optional[BrowserManager]]:
-    """Abre el navegador, realiza el login con PyAutoGUI y conecta Selenium."""
+    """Abre el navegador con proxy, realiza el login y conecta Selenium."""
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
     DEBUGGING_PORT = "9222"
 
-    browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT)
+    # --- Integración del Proxy Manager ---
+    proxy_manager = ProxyManager()
+    proxy = proxy_manager.get_random_proxy()
+    user_agent = proxy_manager.get_random_user_agent()
+    # -----------------------------------
+
+    browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT, proxy=proxy, user_agent=user_agent)
     pyautogui_service = PyAutoGuiService()
 
     try:
