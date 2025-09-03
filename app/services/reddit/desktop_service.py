@@ -26,12 +26,10 @@ class PathManager:
         if PathManager._img_folder:
             return PathManager._img_folder
         try:
-            # Navegar tres niveles arriba desde el archivo actual para llegar a la raíz del proyecto
             script_dir = os.path.dirname(os.path.abspath(__file__))
             project_root = os.path.normpath(os.path.join(script_dir, '..', '..', '..'))
             img_folder = os.path.join(project_root, 'img')
         except NameError:
-            # Fallback para entornos donde __file__ no está definido
             img_folder = "img"
         
         if os.path.isdir(img_folder):
@@ -39,7 +37,6 @@ class PathManager:
             print(f"✅ Usando carpeta de imágenes: {os.path.abspath(img_folder)}")
             return img_folder
 
-        # Fallback a una carpeta local si la ruta construida no funciona
         local_img_folder = "img"
         if os.path.isdir(local_img_folder):
             PathManager._img_folder = local_img_folder
@@ -57,7 +54,7 @@ class HumanInteractionUtils:
         try:
             x_ini, y_ini = pyautogui.position()
             dist = math.hypot(x_dest - x_ini, y_dest - y_ini)
-            duration = max(0.3, min(1.5, dist / 1000))  # Duración basada en la distancia
+            duration = max(0.3, min(1.5, dist / 1000))
             offset = random.randint(-100, 100)
             ctrl_x = (x_ini + x_dest) / 2 + offset
             ctrl_y = (y_ini + y_dest) / 2 - offset
@@ -72,7 +69,7 @@ class HumanInteractionUtils:
 
     @staticmethod
     def type_text_humanly(text: str) -> None:
-        """Escribe texto simulando la escritura de un humano, con manejo especial para '@'."""
+        """Escribe texto simulando la escritura de un humano."""
         print(f"⌨️ Escribiendo: '{text}'")
         for char in text:
             if char == '@':
@@ -96,6 +93,20 @@ class HumanInteractionUtils:
         password = ''.join(secrets.choice(characters) for _ in range(length))
         print(f"🔒 Contraseña generada: {'*' * length}")
         return password
+        
+    @staticmethod
+    def get_random_email_from_file(file_path: str = "correos.txt") -> Optional[str]:
+        """Lee el archivo de correos y devuelve uno aleatorio."""
+        try:
+            with open(file_path, 'r') as f:
+                emails = [line.strip() for line in f if line.strip()]
+            if not emails:
+                print(f"   -> ⚠️  ADVERTENCIA: El archivo '{file_path}' está vacío.")
+                return None
+            return random.choice(emails)
+        except FileNotFoundError:
+            print(f"   -> 🚨 ERROR: No se encontró el archivo de correos en '{file_path}'.")
+            return None
 
 
 class DesktopUtils:
@@ -103,10 +114,11 @@ class DesktopUtils:
     @staticmethod
     def get_and_focus_window(title: str, attempts: int = 5, delay: int = 2) -> Optional[gw.Win32Window]:
         """Busca una ventana por su título, la maximiza y la pone en foco."""
-        print(f"🔍 Buscando ventana con el título '{title}'…")
+        print(f"🔍 Buscando ventana con el título que contiene '{title}'…")
         for attempt in range(attempts):
             try:
-                windows = gw.getWindowsWithTitle(title)
+                # Búsqueda más flexible que contenga el título
+                windows = [w for w in gw.getAllWindows() if title in w.title]
                 if windows:
                     window = windows[0]
                     if window.isMinimized:
@@ -123,7 +135,7 @@ class DesktopUtils:
             if attempt < attempts - 1:
                 print(f"Ventana no encontrada. Reintentando en {delay} segundos...")
                 time.sleep(delay)
-        print(f"❌ No se pudo encontrar la ventana '{title}' después de {attempts} intentos.")
+        print(f"❌ No se pudo encontrar la ventana con el título '{title}' después de {attempts} intentos.")
         return None
 
 class PyAutoGuiService:

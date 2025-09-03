@@ -6,6 +6,7 @@ from fastapi.openapi.docs import get_swagger_ui_html
 
 from app.core.config import get_settings
 from app.api.v1.endpoints import reddit
+from app.api.v1.endpoints import semrush
 
 settings = get_settings()
 
@@ -23,6 +24,12 @@ app.include_router(
     reddit.router,
     prefix="/reddit",
     tags=["Reddit Automation"]
+)
+
+app.include_router(
+    semrush.router,
+    prefix="/semrush",
+    tags=["Semrush Automation"]
 )
 
 # Middleware CORS
