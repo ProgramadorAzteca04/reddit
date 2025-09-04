@@ -87,6 +87,50 @@ def _is_probable_mbox_file(path):
         return os.path.getsize(path) > 0
     except Exception:
         return False
+    
+def _get_html_part(msg):
+    """
+    Recorre las partes de un correo para encontrar y devolver la parte 'text/html'.
+    """
+    if msg.is_multipart():
+        for part in msg.walk():
+            # Busca la parte que es explícitamente HTML
+            if part.get_content_type() == "text/html":
+                return part
+    # Si el correo no es multiparte pero es HTML
+    elif msg.get_content_type() == "text/html":
+        return msg
+    return None
+
+def _extract_semrush_code_from_html(msg):
+    """
+    Extrae específicamente el código de 6 dígitos de un correo HTML de Semrush.
+    Busca el código dentro de un elemento con la clase 'ct-code'.
+    """
+    # 1. Obtener la parte HTML del correo
+    html_part = _get_html_part(msg)
+    if not html_part:
+        return None
+
+    try:
+        # 2. Decodificar el contenido del HTML (maneja 'quoted-printable', etc.)
+        html_body = html_part.get_payload(decode=True).decode(
+            html_part.get_content_charset() or 'utf-8', 
+            errors="replace"
+        )
+        
+        # 3. Expresión regular para encontrar el código en su contenedor específico
+        # Busca: class="ct-code" ... > ... 423969 ... </div>
+        match = re.search(r'class="ct-code".*?>.*?(\d{6}).*?</div>', html_body, re.DOTALL)
+        if match:
+            code = match.group(1)
+            print(f"   -> ✨ Código encontrado con lógica HTML de Semrush: {code}")
+            return code
+            
+    except Exception as e:
+        print(f"   -> ⚠️ Error procesando el HTML de Semrush: {e}")
+        
+    return None
 
 def _decode_header_value(value: str) -> str:
     if not value: return ""
@@ -146,12 +190,33 @@ def _collect_messages(profile_dir):
     return results
 
 def _extract_six_digits_from_msg(msg):
+    """
+    Extrae un código de 6 dígitos de un correo.
+    Primero intenta una lógica específica para HTML de Semrush, y si no,
+    usa una búsqueda genérica en texto plano como respaldo.
+    """
+    # --- Lógica Mejorada ---
+
+    # 1. Verificar si el correo es de Semrush
+    from_header = _decode_header_value(msg.get("From", "")).lower()
+    if "semrush" in from_header:
+        # Intentar la nueva extracción específica para HTML
+        code = _extract_semrush_code_from_html(msg)
+        if code:
+            return code  # ¡Éxito! Devolvemos el código encontrado
+
+    # 2. Si no es de Semrush o la lógica de HTML falló, usar el método anterior
+    print("   -> Usando lógica de extracción genérica (texto plano)...")
     subject = _decode_header_value(msg.get("Subject"))
     m_subject = re.search(r"\b(\d{6})\b", subject)
-    if m_subject: return m_subject.group(1)
+    if m_subject: 
+        return m_subject.group(1)
+    
     body = _get_body_text(msg)
     m_body = re.search(r"\b(\d{6})\b", body)
-    if m_body: return m_body.group(1)
+    if m_body: 
+        return m_body.group(1)
+
     return None
 
 # ----------------------- Función Principal del Servicio (Modificada) ----------------------- #
