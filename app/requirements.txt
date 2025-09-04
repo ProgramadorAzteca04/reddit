@@ -1,0 +1,14 @@
+beautifulsoup4==4.13.5
+fastapi==0.116.1
+passlib==1.7.4
+pyautogui==0.9.54
+pydantic==2.11.7
+pydantic_settings==2.10.1
+pygetwindow==0.0.9
+pyperclip==1.9.0
+pyscreeze==1.0.1
+python-dotenv==1.1.1
+selenium==4.35.0
+selenium_wire==5.1.0
+SQLAlchemy==2.0.43
+webdriver_manager==4.0.2
