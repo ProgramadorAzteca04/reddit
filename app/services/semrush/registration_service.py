@@ -1,19 +1,18 @@
-# app/services/semrush/registration_service.py
 import time
 import os
 import traceback
 from app.services.reddit.browser_service import BrowserManager
 from app.services.reddit.proxy_service import ProxyManager
-from app.services.reddit.desktop_service import DesktopUtils, HumanInteractionUtils
+from app.services.reddit.desktop_service import HumanInteractionUtils
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from app.services.email_reader_service import get_latest_verification_code
 
 def run_semrush_signup_flow():
     """
-    Orquesta el flujo de registro en Semrush: navega, rellena los campos
-    y hace clic en el botón para crear la cuenta.
+    Orquesta el flujo de registro en Semrush...
     """
     print("\n" + "="*60)
     print("🚀 INICIANDO FLUJO: Registro en Semrush.")
@@ -21,8 +20,6 @@ def run_semrush_signup_flow():
 
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     URL = "https://es.semrush.com/signup/"
-    WINDOW_TITLE = "Semrush"
-    DEBUGGING_PORT = "9225"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
 
     browser_manager = None
@@ -35,26 +32,21 @@ def run_semrush_signup_flow():
         browser_manager = BrowserManager(
             chrome_path=CHROME_PATH,
             user_data_dir=USER_DATA_DIR,
-            port=DEBUGGING_PORT,
+            port="", # El puerto ya no es relevante
             proxy=proxy,
             user_agent=user_agent
         )
-
-        browser_manager.open_chrome_with_debugging(URL)
         
+        driver = browser_manager.get_configured_driver(URL)
+        if not driver:
+            raise RuntimeError("No se pudo iniciar el driver de Selenium-Wire.")
+
         print("\n   -> Esperando 20 segundos para que la página cargue...")
         time.sleep(20)
-
-        DesktopUtils.get_and_focus_window(WINDOW_TITLE)
         
-        print("\n   -> Conectando Selenium para interactuar con la página...")
-        driver = browser_manager.connect_to_browser()
-        if not driver:
-            raise ConnectionError("No se pudo conectar Selenium al navegador.")
 
         wait = WebDriverWait(driver, 20)
         
-        # 1. Obtener y escribir el correo
         email_to_use = HumanInteractionUtils.get_random_email_from_file()
         if not email_to_use:
             raise ValueError("No se pudo obtener un correo del archivo correos.txt.")
@@ -68,7 +60,6 @@ def run_semrush_signup_flow():
         email_field.send_keys(email_to_use)
         print("   -> ✅ Correo electrónico escrito exitosamente.")
 
-        # 2. Generar y escribir la contraseña
         password_to_use = HumanInteractionUtils.generate_password(length=14)
         
         password_field = wait.until(
@@ -79,7 +70,6 @@ def run_semrush_signup_flow():
         password_field.send_keys(password_to_use)
         print("   -> ✅ Contraseña escrita exitosamente.")
 
-        # --- 3. HACER CLIC EN EL BOTÓN DE CREAR CUENTA (NUEVO PASO) ---
         print("   -> Buscando el botón 'Crear una cuenta'...")
         
         create_account_button = wait.until(
@@ -88,8 +78,18 @@ def run_semrush_signup_flow():
         create_account_button.click()
         
         print("   -> ✅ Clic exitoso en 'Crear una cuenta'.")
-        # -----------------------------------------------------------
         
+        print("\n   -> Esperando 30 segundos para la recepción del correo de activación...")
+        time.sleep(30)
+
+        print("   -> 📧 Buscando código de activación en el correo...")
+        verification_code = get_latest_verification_code(subject_keywords=['Activation', 'Semrush'])
+        
+        if verification_code:
+            print(f"      -> ✅ ¡Código de verificación encontrado!: {verification_code}")
+        else:
+            print("      -> ⚠️ No se encontró el código de verificación en el correo.")
+
         print("\n   -> Proceso de registro enviado. La ventana permanecerá abierta por 45 segundos para observar el resultado.")
         time.sleep(45)
 

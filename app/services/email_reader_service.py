@@ -4,14 +4,14 @@ import sys
 import mailbox
 import re
 import time
-import subprocess  # <-- Importación nueva
+import subprocess
 from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from email.header import decode_header
+from typing import List
 
 # --- NUEVA CONSTANTE: RUTA A THUNDERBIRD ---
-# Cambia esta ruta si tu Thunderbird está instalado en otro lugar.
 THUNDERBIRD_PATH = r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe"
 
 # ----------------------- Nueva Función de Sincronización ----------------------- #
@@ -27,7 +27,6 @@ def _open_and_sync_thunderbird(duration_seconds: int = 30):
     try:
         print(f"\n⚡ Abriendo Thunderbird para sincronizar por {duration_seconds} segundos...")
         process = subprocess.Popen([THUNDERBIRD_PATH])
-        # Barra de progreso para la espera
         for i in range(duration_seconds):
             time.sleep(1)
             progress = i + 1
@@ -39,12 +38,12 @@ def _open_and_sync_thunderbird(duration_seconds: int = 30):
     finally:
         if process:
             print("   -> Cerrando Thunderbird...")
-            process.terminate()  # Intenta cerrar amistosamente primero
+            process.terminate()
             try:
-                process.wait(timeout=5)  # Espera 5 segundos a que cierre
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 print("   -> Thunderbird no respondió, forzando el cierre.")
-                process.kill()  # Si no cierra, lo fuerza
+                process.kill()
             print("   -> Thunderbird cerrado.\n")
 
 
@@ -157,13 +156,16 @@ def _extract_six_digits_from_msg(msg):
 
 # ----------------------- Función Principal del Servicio (Modificada) ----------------------- #
 
-def get_latest_verification_code(profile_path: str = None, timeout_seconds: int = 60) -> str | None:
+def get_latest_verification_code(
+    subject_keywords: List[str],
+    profile_path: str = None,
+    timeout_seconds: int = 60
+) -> str | None:
     """
-    Abre Thunderbird para sincronizar, luego busca el correo de verificación más reciente y devuelve el código.
+    Abre Thunderbird para sincronizar, luego busca el correo de verificación más reciente 
+    cuyo asunto contenga las palabras clave y devuelve el código.
     """
-    # --- PASO AÑADIDO: ABRIR, SINCRONIZAR Y CERRAR THUNDERBIRD ---
     _open_and_sync_thunderbird(duration_seconds=60)
-    # ----------------------------------------------------------------
 
     print(f"📧 Buscando código de verificación de 6 dígitos en los correos de Thunderbird...")
     start_time = time.time()
@@ -175,8 +177,8 @@ def get_latest_verification_code(profile_path: str = None, timeout_seconds: int 
 
             verification_emails = []
             for msg in all_messages:
-                subj = _decode_header_value(msg.get("Subject", ""))
-                if "verification" in subj.lower() or "verificación" in subj.lower():
+                subj = _decode_header_value(msg.get("Subject", "")).lower()
+                if any(keyword.lower() in subj for keyword in subject_keywords):
                     dt = _get_datetime(msg.get("Date"))
                     verification_emails.append((dt, msg))
             

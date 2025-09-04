@@ -22,11 +22,9 @@ def run_registration_flow(email: str, url: str) -> bool:
     WINDOW_TITLE = "Reddit"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
     
-    # --- Integración del Proxy Manager ---
     proxy_manager = ProxyManager()
     proxy = proxy_manager.get_random_proxy()
     user_agent = proxy_manager.get_random_user_agent()
-    # -----------------------------------
 
     browser_manager = BrowserManager(CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT, proxy=proxy, user_agent=user_agent)
     pyautogui_service = PyAutoGuiService()
@@ -58,7 +56,7 @@ def run_registration_flow(email: str, url: str) -> bool:
         
         time.sleep(2)
 
-        verification_code = get_latest_verification_code()
+        verification_code = get_latest_verification_code(subject_keywords=["verification", "verificación"])
         if verification_code:
             pyautogui_service.find_and_click_humanly(["verification.png"], attempts=3, wait_time=2)
             HumanInteractionUtils.type_text_humanly(verification_code)
