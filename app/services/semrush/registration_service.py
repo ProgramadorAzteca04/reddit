@@ -12,6 +12,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from app.services.email_reader_service import get_latest_verification_code
 
+# --- ¡NUEVAS IMPORTACIONES! ---
+from app.db.database import get_db
+from app.models.semrush_models import CredentialSemrush
+
 def _handle_survey_step(driver: WebDriver, wait: WebDriverWait, survey_step: int):
     """
     Función reutilizable para manejar un paso de la encuesta.
@@ -64,11 +68,23 @@ def run_semrush_signup_flow():
 
     browser_manager = None
     driver = None
+    # --- Variables para guardar en la BD ---
+    email_to_use = ""
+    password_to_use = ""
+    proxy_info = {}
+
     try:
         # --- Configuración del navegador ---
         proxy_manager = ProxyManager()
         proxy = proxy_manager.get_random_proxy()
         user_agent = proxy_manager.get_random_user_agent()
+        
+        # --- Guardamos la info del proxy ---
+        if proxy:
+            proxy_info = {
+                "host": proxy.get("host"),
+                "port": proxy.get("port")
+            }
 
         browser_manager = BrowserManagerProxy(
             chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="",
@@ -131,7 +147,6 @@ def run_semrush_signup_flow():
         # 1. Omitir periodo de prueba
         print("\n   -> 💳 Buscando botón para omitir periodo de prueba...")
         try:
-            # Usamos un tiempo de espera más corto aquí para no ralentizar el flujo si no aparece
             short_wait = WebDriverWait(driver, 10)
             skip_trial_button = short_wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-test="skip-button"]'))
@@ -175,6 +190,27 @@ def run_semrush_signup_flow():
             print("      -> ✅ Clic en 'Empieza a usar Semrush'.")
         except TimeoutException:
             print("      -> No se encontró la pregunta final (paso opcional).")
+
+        # --- ¡NUEVO BLOQUE PARA GUARDAR EN LA BASE DE DATOS! ---
+        print("\n   -> 💾 Intentando guardar la nueva cuenta en la base de datos...")
+        db = next(get_db())
+        try:
+            new_credential = CredentialSemrush(
+                email=email_to_use,
+                password=password_to_use,
+                proxy=proxy_info.get("host"),
+                port=proxy_info.get("port"),
+                note="Registrado automáticamente"
+            )
+            db.add(new_credential)
+            db.commit()
+            print("      -> ✅ ¡Cuenta guardada exitosamente en la base de datos!")
+        except Exception as db_error:
+            print(f"      -> 🚨 ERROR al guardar en la base de datos: {db_error}")
+            db.rollback()
+        finally:
+            db.close()
+        # -----------------------------------------------------------
 
         print("\n   -> Registro completado. La ventana permanecerá abierta por 20 segundos.")
         time.sleep(20)

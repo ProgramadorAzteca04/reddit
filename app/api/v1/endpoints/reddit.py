@@ -1,12 +1,12 @@
 # app/api/v1/endpoints/reddit.py
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status, Depends
-from app.schemas.auth import LoginRequest, AutomationRequest, MultiLoginRequest, CreatePostRequest, MultiRegisterRequest
+from app.schemas.reddit import LoginRequest, AutomationRequest, MultiLoginRequest, CreatePostRequest, MultiRegisterRequest
 from app.services.reddit.login_service import run_login_flow
 from app.services.reddit.registration_service import run_registration_flow
 from app.services.reddit.post_creator_service import execute_create_post_flow
 from app.services.reddit.multi_account_service import run_multi_login_flow
 from app.services.reddit import multi_registration_service
-from app.schemas.auth import CommentToPostRequest
+from app.schemas.reddit import CommentToPostRequest
 from app.services.reddit.comment_service import scrape_and_store_comment_as_post
 
 router = APIRouter()
