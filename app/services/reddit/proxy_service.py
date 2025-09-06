@@ -1,3 +1,4 @@
+# app/services/reddit/proxy_service.py
 import random
 from typing import List, Dict, Optional
 
@@ -50,6 +51,20 @@ class ProxyManager:
         if not ProxyManager._proxies:
             return None
         return random.choice(ProxyManager._proxies)
+
+    # --- ¡NUEVO MÉTODO AÑADIDO! ---
+    def get_proxy_by_host_port(self, host: str, port: str) -> Optional[Dict[str, str]]:
+        """
+        Busca un proxy por host y puerto en la lista cargada.
+        """
+        if not host or not port:
+            return None
+        
+        for proxy in ProxyManager._proxies:
+            if proxy.get("host") == host and proxy.get("port") == port:
+                return proxy
+        return None
+    # --------------------------------
 
     def get_random_user_agent(self) -> str:
         """Devuelve una cadena de agente de usuario aleatoria."""

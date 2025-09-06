@@ -20,3 +20,16 @@ class CredentialSemrush(Base):
 
     def __repr__(self):
         return f"<CredentialSemrush(email='{self.email}')>"
+    
+class Campaign(Base):
+    """
+    Modelo para la tabla de campañas.
+    """
+    __tablename__ = 'campaigns'
+
+    id = Column(Integer, primary_key=True, index=True)
+    web = Column(String(255))
+    # ... se pueden añadir las otras columnas si se necesitan en el futuro
+    
+    def __repr__(self):
+        return f"<Campaign(id='{self.id}', web='{self.web}')>"
