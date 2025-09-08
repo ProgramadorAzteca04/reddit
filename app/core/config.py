@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     SECOND_DATABASE_URL: str
     REDDIT_SCREENSHOTS_DIR: str = "img"
     DEBUG: bool = False
-    RECAPTCHA_SECRET_KEY: str
+    TWOCAPTCHA_API_KEY: str
 
     # === OpenAI ===
     # Lee OPENAI_API_KEY desde .env (o del entorno) y no rompe por "extra"
