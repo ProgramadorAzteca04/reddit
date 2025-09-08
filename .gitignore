@@ -14,5 +14,6 @@ proxies.txt
 chrome_login_session
 chrome_registration_session
 
+.vscode
 .env
 .env.local  
