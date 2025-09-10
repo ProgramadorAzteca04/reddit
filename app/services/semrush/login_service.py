@@ -1,32 +1,170 @@
 # app/services/semrush/login_service.py
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
+
+from app.api.v1.endpoints.drive_campaign import (
+    build_drive_client,
+    get_campaign_phrases_by_city,
+)
+from selenium.common.exceptions import (
+    TimeoutException,
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+    WebDriverException,
+)
 from app.services.reddit.browser_service import BrowserManagerProxy
+from app.models.semrush_models import Campaign, CredentialSemrush
 from selenium.webdriver.support import expected_conditions as EC
 from app.services.reddit.proxy_service import ProxyManager
 from selenium.webdriver.remote.webdriver import WebDriver
-from app.models.semrush_models import Campaign, CredentialSemrush
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from app.db.database import get_db
+
 import traceback
 import time
 import os
 
 
-# --- ¡NUEVA FUNCIÓN DE LOGOUT AÑADIDA! ---
+# ───────────────────────────────────────────────────────────────────────────────
+# Helpers de resiliencia (no alteran la lógica, solo la endurecen)
+# ───────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_STEP_TIMEOUT = 30
+DEFAULT_RETRIES = 2
+
+def _sleep(s: float):
+    try:
+        time.sleep(s)
+    except Exception:
+        pass
+
+def _wait_clickable(wait: "WebDriverWait", driver: "WebDriver", locator, label: str, timeout: int | None = None):
+    """Espera un elemento clickable con timeout opcional. Retorna el elemento o None (no lanza)."""
+    try:
+        local_wait = wait if timeout is None else WebDriverWait(driver, timeout)
+        el = local_wait.until(EC.element_to_be_clickable(locator))
+        return el
+    except TimeoutException:
+        print(f"      -> ⏱️ Timeout esperando '{label}'.")
+        return None
+    except Exception as e:
+        print(f"      -> ⚠️ Error esperando '{label}': {e}")
+        return None
+
+def _click_with_fallback(driver: "WebDriver", element, label: str) -> bool:
+    """Intenta click normal; si es interceptado u obsoleto, intenta scroll + JS click."""
+    if element is None:
+        return False
+    try:
+        element.click()
+        return True
+    except ElementClickInterceptedException:
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+            _sleep(0.2)
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        except Exception as e2:
+            print(f"      -> ⚠️ Fallback JS click falló en '{label}': {e2}")
+            return False
+    except StaleElementReferenceException:
+        print(f"      -> ⚠️ Elemento obsoleto al hacer click en '{label}'.")
+        return False
+    except WebDriverException as e:
+        print(f"      -> ⚠️ WebDriverException al hacer click en '{label}': {e}")
+        return False
+
+def _wait_and_click(wait: "WebDriverWait", driver: "WebDriver", locator, label: str,
+                    retries: int = DEFAULT_RETRIES, timeout: int | None = None) -> bool:
+    """Espera y hace click con reintentos y fallback. No lanza excepciones."""
+    for attempt in range(1, retries + 1):
+        el = _wait_clickable(wait, driver, locator, label, timeout=timeout)
+        if _click_with_fallback(driver, el, label):
+            print(f"      -> ✅ Click en '{label}' (intento {attempt}).")
+            return True
+        print(f"      -> 🔁 Reintentando click en '{label}' (intento {attempt}/{retries})...")
+        _sleep(1.0)
+    print(f"      -> ❌ No se pudo hacer click en '{label}' tras {retries} intentos.")
+    return False
+
+def _send_text_to_input(wait: "WebDriverWait", driver: "WebDriver", locator, text: str,
+                        label: str, clear_first: bool = True, timeout: int | None = None) -> bool:
+    """Foco, limpiar (si aplica) y send_keys; silencioso en errores."""
+    el = _wait_clickable(wait, driver, locator, label, timeout=timeout)
+    if el is None:
+        return False
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        _sleep(0.2)
+    except Exception:
+        pass
+    try:
+        el.click()
+        _sleep(0.2)
+        if clear_first:
+            try:
+                el.clear()
+            except Exception:
+                el.send_keys(Keys.CONTROL, 'a')
+                _sleep(0.1)
+                el.send_keys(Keys.DELETE)
+                _sleep(0.1)
+        if text:
+            el.send_keys(text)
+        print(f"      -> ✅ Texto enviado a '{label}'.")
+        return True
+    except Exception as e:
+        print(f"      -> ⚠️ No se pudo escribir en '{label}': {e}")
+        return False
+
+def _wait_visible(wait: "WebDriverWait", driver: "WebDriver", locator, label: str, timeout: int | None = None) -> bool:
+    """Espera visibilidad; retorna True/False sin lanzar excepción."""
+    try:
+        local_wait = wait if timeout is None else WebDriverWait(driver, timeout)
+        local_wait.until(EC.visibility_of_element_located(locator))
+        print(f"      -> 👀 Visible: '{label}'.")
+        return True
+    except TimeoutException:
+        print(f"      -> ⏱️ Timeout de visibilidad en '{label}'.")
+        return False
+    except Exception as e:
+        print(f"      -> ⚠️ Error de visibilidad en '{label}': {e}")
+        return False
+
+def _press_first_suggestion(el, label: str) -> bool:
+    """Flecha abajo + Enter, con esperas suaves."""
+    try:
+        el.send_keys(Keys.ARROW_DOWN)
+        _sleep(0.4)
+        el.send_keys(Keys.ENTER)
+        print(f"      -> ✅ Primera sugerencia confirmada en '{label}'.")
+        return True
+    except Exception as e:
+        print(f"      -> ⚠️ No se pudo seleccionar sugerencia en '{label}': {e}")
+        return False
+
+def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
+    """Intenta cerrar sesión sin romper si falla."""
+    try:
+        _perform_logout(driver, wait)
+    except Exception as e:
+        print(f"   -> ⚠️ Logout best-effort falló: {e}")
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Logout (igual a tu lógica original, con mensajes y manejo básico)
+# ───────────────────────────────────────────────────────────────────────────────
+
 def _perform_logout(driver: "WebDriver", wait: "WebDriverWait"):
     """
     Realiza el proceso de cierre de sesión en Semrush.
     """
     print("\n   -> 👋 Iniciando proceso de cierre de sesión...")
     try:
-        # 1. Hacer clic en el botón del menú de usuario
         print("      -> Buscando el botón del perfil de usuario...")
         user_menu_button = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[data-test="header-menu__user"]'))
         )
-        
-        # A veces un overlay puede interferir, usamos JavaScript como alternativa robusta
         try:
             user_menu_button.click()
         except ElementClickInterceptedException:
@@ -34,9 +172,8 @@ def _perform_logout(driver: "WebDriver", wait: "WebDriverWait"):
             driver.execute_script("arguments[0].click();", user_menu_button)
 
         print("      -> ✅ Clic en el perfil realizado. Esperando el menú...")
-        time.sleep(2) # Pausa para que el menú desplegable se muestre correctamente
+        _sleep(2)
 
-        # 2. Hacer clic en el enlace de "Cerrar sesión"
         print("      -> Buscando el enlace de 'Cerrar sesión'...")
         logout_link = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 'a[data-test="header-menu__user-logout"]'))
@@ -44,17 +181,19 @@ def _perform_logout(driver: "WebDriver", wait: "WebDriverWait"):
         logout_link.click()
         print("      -> ✅ Clic en 'Cerrar sesión' realizado.")
         
-        # Esperamos a que la página de login vuelva a aparecer como confirmación
         wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'input[name="email"]')))
         print("   -> 🎉 ¡Cierre de sesión completado exitosamente!")
-        time.sleep(3)
+        _sleep(3)
 
     except TimeoutException:
         print("      -> 🚨 ERROR: No se pudo encontrar un elemento para el cierre de sesión.")
     except Exception as e:
         print(f"      -> 🚨 Ocurrió un error inesperado durante el logout: {e}")
-# -----------------------------------------------
 
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Flujo de LOGIN (misma lógica, endurecida)
+# ───────────────────────────────────────────────────────────────────────────────
 
 def run_semrush_login_flow(credential_id: int):
     """
@@ -64,7 +203,7 @@ def run_semrush_login_flow(credential_id: int):
     print(f"🚀 INICIANDO FLUJO: Login en Semrush para la credencial ID #{credential_id}.")
     print("="*60)
 
-    # --- 1. Obtener Credenciales de la Base de Datos ---
+    # 1. Obtener credenciales
     db = next(get_db())
     try:
         credential = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
@@ -78,11 +217,10 @@ def run_semrush_login_flow(credential_id: int):
         proxy_port = credential.port
         
         print(f"   -> ✅ Credenciales encontradas para el correo: '{email}'")
-
     finally:
         db.close()
 
-    # --- 2. Configuración del Navegador ---
+    # 2. Configuración de navegador
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     URL = "https://es.semrush.com/login/"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
@@ -91,17 +229,17 @@ def run_semrush_login_flow(credential_id: int):
     driver = None
     
     try:
-        # --- Lógica de Proxy Mejorada ---
+        # Proxy
         proxy_config = None
         if proxy_host and proxy_port:
             print(f"   -> Buscando credenciales para el proxy {proxy_host}:{proxy_port} en 'proxies.txt'...")
             proxy_manager = ProxyManager()
             proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
-            
             if proxy_config:
                 print("      -> ✅ Credenciales del proxy encontradas.")
             else:
-                raise ValueError(f"El proxy {proxy_host}:{proxy_port} de la BD no existe en proxies.txt")
+                print(f"      -> ❌ Proxy {proxy_host}:{proxy_port} no existe en proxies.txt")
+                return
         else:
             print("   -> ⚠️ No se utilizará proxy (no definido en la base de datos).")
 
@@ -114,44 +252,40 @@ def run_semrush_login_flow(credential_id: int):
         
         driver = browser_manager.get_configured_driver(URL)
         if not driver:
-            raise RuntimeError("No se pudo iniciar el driver de Selenium-Wire.")
+            print("   -> ❌ No se pudo iniciar el driver de Selenium-Wire.")
+            return
 
         print("\n   -> Esperando 20 segundos para que la página de login cargue...")
-        time.sleep(20)
-        
-        wait = WebDriverWait(driver, 30)
+        _sleep(20)
+        wait = WebDriverWait(driver, DEFAULT_STEP_TIMEOUT)
 
-        # --- 3. Llenado del Formulario de Login ---
-        print("   -> 📧 Buscando el campo de email...")
-        email_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="email"]')))
-        email_field.click(); time.sleep(1)
-        email_field.send_keys(email)
-        print("      -> Email introducido.")
+        # Email
+        if not _wait_and_click(wait, driver, (By.CSS_SELECTOR, 'input[name="email"]'), "input email"):
+            return
+        _sleep(0.3)
+        _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="email"]'), email, "input email", clear_first=False)
 
-        print("   -> 🔒 Buscando el campo de contraseña...")
-        password_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="password"]')))
-        password_field.click(); time.sleep(1)
-        password_field.send_keys(password)
-        print("      -> Contraseña introducida.")
-        
-        print("   -> 🚪 Buscando el botón de 'Iniciar sesión'...")
-        login_button = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[.//span[text()="Iniciar sesión"]]')))
-        login_button.click()
-        print("      -> ✅ Clic en 'Iniciar sesión' realizado.")
+        # Password
+        if not _wait_and_click(wait, driver, (By.CSS_SELECTOR, 'input[name="password"]'), "input password"):
+            return
+        _sleep(0.3)
+        _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="password"]'), password, "input password", clear_first=False)
 
-        # Esperamos a que la URL cambie como señal de un login exitoso
-        wait.until(EC.url_contains("projects"))
-        print("\n   -> 🎉 ¡Login exitoso! La sesión permanecerá abierta por 30 segundos.")
-        time.sleep(30) # Reducido para pruebas más rápidas
+        # Botón Iniciar sesión
+        if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar sesión"]]'), "botón Iniciar sesión"):
+            return
 
-        # --- ¡LLAMADA A LA NUEVA FUNCIÓN DE LOGOUT! ---
-        _perform_logout(driver, wait)
-        # ---------------------------------------------
+        # Confirmación de login
+        try:
+            wait.until(EC.url_contains("projects"))
+            print("\n   -> 🎉 ¡Login exitoso! La sesión permanecerá abierta por 30 segundos.")
+        except TimeoutException:
+            print("\n   -> 🚨 No se detectó redirección a 'projects' tras login.")
+            return
 
-    except TimeoutException:
-        print("\n   -> 🚨 ERROR: El login falló. Un elemento no fue encontrado a tiempo o la URL no cambió.")
-        print("      -> La ventana permanecerá abierta 20 segundos para inspección.")
-        time.sleep(20)
+        _sleep(30)
+        _best_effort_logout(driver, wait)
+
     except Exception as e:
         print(f"\n🚨 ERROR FATAL durante el flujo de login de Semrush: {e}")
         traceback.print_exc()
@@ -163,6 +297,10 @@ def run_semrush_login_flow(credential_id: int):
         print("="*60 + "\n")
 
 
+# ───────────────────────────────────────────────────────────────────────────────
+# Flujo de CONFIGURACIÓN DE CUENTA (misma lógica, endurecida)
+# ───────────────────────────────────────────────────────────────────────────────
+
 def run_semrush_config_account_flow(id_campaign: int, city: str):
     """
     Busca una cuenta de Semrush sin campaña, realiza el login, configura el proyecto
@@ -172,21 +310,24 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
     print(f"🚀 INICIANDO FLUJO: Configuración de cuenta para Campaña ID #{id_campaign} en {city}.")
     print("="*60)
 
-    # Paso 1: Buscar credencial y campaña sin modificar la BD
+    # Paso 1: Buscar credencial y campaña
     db = next(get_db())
     try:
         print("   -> 🔍 Buscando una credencial disponible en la base de datos...")
         credential_to_use = db.query(CredentialSemrush).filter(CredentialSemrush.id_campaigns == None).first()
         if not credential_to_use:
-            raise ValueError("No se encontró ninguna credencial con 'id_campaigns' vacío.")
+            print("   -> ❌ No se encontró ninguna credencial con 'id_campaigns' vacío.")
+            return
         print(f"   -> ✅ Credencial encontrada (ID: {credential_to_use.id}), email: '{credential_to_use.email}'.")
 
         print(f"   -> 🔍 Buscando la campaña con ID: {id_campaign}...")
         campaign = db.query(Campaign).filter(Campaign.id == id_campaign).first()
         if not campaign:
-            raise ValueError(f"No se encontró ninguna campaña con el ID: {id_campaign}")
+            print(f"   -> ❌ No se encontró ninguna campaña con el ID: {id_campaign}")
+            return
         if not campaign.web:
-            raise ValueError(f"La campaña con ID {id_campaign} no tiene una URL web definida.")
+            print(f"   -> ❌ La campaña con ID {id_campaign} no tiene una URL web definida.")
+            return
         print(f"   -> ✅ Campaña encontrada. Web a configurar: '{campaign.web}'")
         
         web_url = campaign.web
@@ -195,9 +336,6 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
         proxy_host = credential_to_use.proxy
         proxy_port = credential_to_use.port
 
-    except Exception as e:
-        print(f"   -> 🚨 ERROR en la preparación: {e}")
-        return
     finally:
         db.close()
 
@@ -206,6 +344,7 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
     URL = "https://es.semrush.com/login/"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
     browser_manager = None
+    driver = None
     
     try:
         proxy_config = None
@@ -213,49 +352,174 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
             proxy_manager = ProxyManager()
             proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
             if not proxy_config:
-                raise ValueError(f"El proxy {proxy_host}:{proxy_port} de la BD no existe en proxies.txt")
+                print(f"   -> ❌ El proxy {proxy_host}:{proxy_port} de la BD no existe en proxies.txt")
+                return
         
         browser_manager = BrowserManagerProxy(
             chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="", proxy=proxy_config
         )
         driver = browser_manager.get_configured_driver(URL)
         if not driver:
-            raise RuntimeError("No se pudo iniciar el driver de Selenium-Wire.")
+            print("   -> ❌ No se pudo iniciar el driver de Selenium-Wire.")
+            return
 
         print("\n   -> Esperando para que la página de login cargue...")
-        time.sleep(20)
-        wait = WebDriverWait(driver, 30)
+        _sleep(20)
+        wait = WebDriverWait(driver, DEFAULT_STEP_TIMEOUT)
 
         # Llenado del formulario de login
-        email_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="email"]')))
-        email_field.click(); time.sleep(1); email_field.send_keys(email)
-
-        password_field = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[name="password"]')))
-        password_field.click(); time.sleep(1); password_field.send_keys(password)
-        
-        login_button = wait.until(EC.element_to_be_clickable((By.XPATH, '//button[.//span[text()="Iniciar sesión"]]')))
-        login_button.click()
-        print("      -> ✅ Clic en 'Iniciar sesión' realizado.")
+        if not _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="email"]'), email, "input email", clear_first=False):
+            _best_effort_logout(driver, wait); return
+        if not _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="password"]'), password, "input password", clear_first=False):
+            _best_effort_logout(driver, wait); return
+        if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar sesión"]]'), "botón Iniciar sesión"):
+            _best_effort_logout(driver, wait); return
 
         # Paso 3: Configurar el proyecto con la web
         print("\n   -> 🌐 Esperando a la página de creación de proyecto...")
-        web_input_selector = 'input[data-ui-name="Input.Value"][placeholder="Indica el nombre de tu sitio web"]'
-        web_input = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, web_input_selector)))
+        web_input_sel = (By.CSS_SELECTOR, 'input[data-ui-name="Input.Value"][placeholder="Indica el nombre de tu sitio web"]')
+        if not _wait_visible(wait, driver, web_input_sel, "input web del proyecto"):
+            _best_effort_logout(driver, wait); return
         
         print(f"   -> ✍️  Introduciendo la web '{web_url}' en el campo del proyecto...")
-        web_input.send_keys(web_url)
-        time.sleep(2)
+        if not _send_text_to_input(wait, driver, web_input_sel, web_url, "input web del proyecto", clear_first=False):
+            _best_effort_logout(driver, wait); return
+        _sleep(2)
         
-        # --- ¡NUEVO BLOQUE DE CÓDIGO AÑADIDO! ---
-        print("\n   -> 🛠️  Buscando el botón 'Configurar' de seguimiento de posición...")
-        # Este XPath busca el div con el data-path específico y luego el botón que contiene el texto 'Configurar'
-        config_button_xpath = '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'
-        
-        config_button = wait.until(EC.element_to_be_clickable((By.XPATH, config_button_xpath)))
-        
-        config_button.click()
-        print("   -> ✅ Clic en el botón 'Configurar' realizado.")
-        # -----------------------------------------------
+        # Paso 3a: Botón "Empieza ahora"
+        print("\n   -> 🛠️  Buscando el botón 'Empieza ahora'...")
+        if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Empieza ahora"]]'), "botón Empieza ahora"):
+            _best_effort_logout(driver, wait); return
+
+        # Pausa para la siguiente sección
+        _sleep(15)
+
+        # Paso 3b: Bloque de 'Supervisa el posicionamiento de la palabra clave.'
+        print("\n   -> 🔍 Esperando el bloque de 'Supervisa el posicionamiento...'")
+        pos_block = (By.XPATH, '//div[@data-path="position_tracking"]//span[text()="Supervisa el posicionamiento de la palabra clave."]')
+        if not _wait_visible(wait, driver, pos_block, "bloque 'Supervisa el posicionamiento...'"):
+            _best_effort_logout(driver, wait); return
+        print("   -> ✅ Bloque de posicionamiento encontrado.")
+
+        # Paso 3c: Botón "Configurar" dentro de ese bloque
+        print("\n   -> 🛠️  Buscando el botón 'Configurar' dentro del bloque...")
+        if not _wait_and_click(wait, driver, (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'),
+                               "botón Configurar (position_tracking)"):
+            _best_effort_logout(driver, wait); return
+        _sleep(10)  # Espera para que cargue el formulario de configuración
+
+        # Paso 3d: Escribir la ciudad en el campo de ubicación y seleccionar la primera sugerencia
+        print("\n   -> 🗺️  Rellenando la ubicación (city) y seleccionando la primera sugerencia...")
+        loc_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Introduce país, ciudad, calle o código postal"]')
+        el_loc = _wait_clickable(wait, driver, loc_input, "input ubicación")
+        if el_loc is None:
+            _best_effort_logout(driver, wait); return
+
+        try:
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el_loc)
+        except Exception:
+            pass
+
+        try:
+            el_loc.click(); _sleep(1)
+            try:
+                el_loc.clear()
+            except Exception:
+                el_loc.send_keys(Keys.CONTROL, 'a'); _sleep(0.1); el_loc.send_keys(Keys.DELETE); _sleep(0.1)
+            el_loc.send_keys(city)
+            _sleep(5)  # espera para que carguen sugerencias
+            _press_first_suggestion(el_loc, "input ubicación")
+        except Exception as e:
+            print(f"      -> ⚠️ No se pudo completar la ubicación: {e}")
+            _best_effort_logout(driver, wait); return
+        _sleep(5)  # según requerimiento
+
+        # Paso 3e: Rellenar el nombre del negocio usando el name de la campaña
+        print("\n   -> 🏷️  Rellenando el nombre del negocio desde public.campaigns.name...")
+        biz_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Incluye el nombre del negocio completo"]')
+        try:
+            campaign_name = campaign.name if hasattr(campaign, "name") and campaign.name else str(id_campaign)
+        except Exception:
+            campaign_name = str(id_campaign)
+        if not _send_text_to_input(wait, driver, biz_input, campaign_name, "input nombre negocio", clear_first=True):
+            _best_effort_logout(driver, wait); return
+        print(f"   -> ✅ Nombre del negocio establecido: '{campaign_name}'.")
+
+        # Paso 3f: Esperar 5s y continuar a "Palabras clave"
+        print("\n   -> ⏳ Esperando 5 segundos antes de continuar...")
+        _sleep(5)
+
+        print("   -> 🡆 Buscando y haciendo clic en 'Continuar a Palabras clave'...")
+        if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-next-step-button"), "Continuar a Palabras clave (ID)"):
+            if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Continuar a Palabras clave"]]'),
+                                   "Continuar a Palabras clave (texto)"):
+                _best_effort_logout(driver, wait); return
+        print("   -> ✅ Avanzaste a 'Palabras clave'.")
+
+        # Paso 3g: Obtener frases desde Google Drive para esta campaña/ciudad
+        print("\n   -> 🔎 Obteniendo frases de Drive para la ciudad y campaña dadas...")
+        phrases: list[str] = []
+        try:
+            drive = build_drive_client(credentials_json_path="credentials.json", token_json_path="token.json")
+            phrases = get_campaign_phrases_by_city(drive, id_campaign, city) or []
+            # Limpieza rápida: quitar vacíos y duplicados, conservar orden
+            seen = set()
+            phrases = [p.strip() for p in phrases if p and p.strip() and not (p.strip() in seen or seen.add(p.strip()))]
+            print(f"   -> ✅ Frases obtenidas: {len(phrases)}")
+        except FileNotFoundError as e:
+            print(f"   -> 🚨 No se encontró el archivo de credenciales/tokens de Google: {e}")
+        except ImportError as e:
+            print(f"   -> 🚨 Dependencia faltante (openpyxl). Instala con: pip install openpyxl. Detalle: {e}")
+        except Exception as e:
+            print(f"   -> 🚨 Error al obtener frases desde Drive: {e}")
+
+        if not phrases:
+            print("   -> ⚠️ No se encontraron frases para esta ciudad/campaña.")
+
+        # Paso 3h: Pegar frases (separadas por comas) en el textarea de "Palabras clave"
+        print("\n   -> 📝 Pegando frases en el textarea de 'Palabras clave'...")
+        _sleep(3)
+
+        def _sanitize_phrase(s):
+            s = str(s).strip()
+            if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+                s = s[1:-1].strip()
+            return s
+
+        phrases_csv = ", ".join([_sanitize_phrase(p) for p in (phrases or []) if str(p).strip()])
+
+        if phrases_csv:
+            ta_locator = (By.XPATH, '//textarea[@data-ui-name="Textarea" and contains(@placeholder, "keyword1")]')
+            if _wait_visible(wait, driver, ta_locator, "textarea Palabras clave"):
+                ta = _wait_clickable(wait, driver, ta_locator, "textarea Palabras clave")
+                if ta:
+                    try:
+                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", ta)
+                        _sleep(0.2)
+                    except Exception:
+                        pass
+                    try:
+                        ta.click(); _sleep(0.2)
+                        try:
+                            ta.clear()
+                        except Exception:
+                            ta.send_keys(Keys.CONTROL, 'a'); _sleep(0.1)
+                            ta.send_keys(Keys.DELETE); _sleep(0.1)
+                        ta.send_keys(phrases_csv)
+                        print("   -> ✅ Frases pegadas en el textarea de 'Palabras clave'.")
+                    except Exception as e:
+                        print(f"   -> ⚠️ No se pudieron pegar las frases: {e}")
+        else:
+            print("   -> ⚠️ No hay frases para pegar (lista vacía). Se continúa sin pegar.")
+
+        # Paso 3i: Clic en "Iniciar rastreo"
+        print("\n   -> ▶️ Iniciando rastreo (clic en 'Iniciar rastreo')...")
+        _sleep(2)
+        if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo (ID)"):
+            if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar rastreo"]]'),
+                                   "Iniciar rastreo (texto)"):
+                _best_effort_logout(driver, wait); return
+        _sleep(5)
 
         # Paso 4: SOLO SI TODO LO ANTERIOR ES CORRECTO, actualizar la BD
         print("\n   -> 💾 Proceso de automatización exitoso. Actualizando la base de datos...")
@@ -274,9 +538,9 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
         finally:
             db.close()
 
-        print("\n   -> 🎉 ¡Configuración completada! La sesión permanecerá abierta por 20 segundos.")
-        time.sleep(20)
-        _perform_logout(driver, wait)
+        print("\n   -> 🎉 ¡Configuración completada!")
+        _sleep(240)
+        _best_effort_logout(driver, wait)
 
     except Exception as e:
         print(f"\n🚨 ERROR FATAL durante el flujo de configuración: {e}")

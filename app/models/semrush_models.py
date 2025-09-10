@@ -28,6 +28,7 @@ class Campaign(Base):
     __tablename__ = 'campaigns'
 
     id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255))
     web = Column(String(255))
     # ... se pueden añadir las otras columnas si se necesitan en el futuro
     

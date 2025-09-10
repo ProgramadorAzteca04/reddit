@@ -1,12 +1,12 @@
 # main.py
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from app.api.v1.endpoints.drive_campaign import router as drive_campaign_router
 from fastapi.openapi.docs import get_swagger_ui_html
-
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.v1.endpoints import semrush
 from app.core.config import get_settings
 from app.api.v1.endpoints import reddit
-from app.api.v1.endpoints import semrush
+from fastapi.responses import Response
+from fastapi import FastAPI
 
 settings = get_settings()
 
@@ -24,6 +24,10 @@ app.include_router(
     reddit.router,
     prefix="/reddit",
     tags=["Reddit Automation"]
+)
+
+app.include_router(
+    drive_campaign_router
 )
 
 app.include_router(

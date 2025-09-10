@@ -1,8 +1,8 @@
 # app/api/v1/endpoints/semrush.py
-from app.services.semrush.registration_service import run_semrush_signup_flow
 from app.services.semrush.login_service import run_semrush_config_account_flow, run_semrush_login_flow
-from app.schemas.semrush import ConfigAccountRequest, SemrushLoginRequest
-from fastapi import APIRouter, BackgroundTasks
+from app.services.semrush.registration_service import run_semrush_signup_flow, run_semrush_signup_flow_batch
+from app.schemas.semrush import BatchSignupRequest, ConfigAccountRequest, SemrushLoginRequest
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 
 router = APIRouter()
@@ -18,6 +18,20 @@ async def start_semrush_signup(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_semrush_signup_flow)
     
     return {"message": "El proceso de navegación a Semrush ha comenzado en segundo plano."}
+
+@router.post("/signup/batch", status_code=202, summary="Registrar múltiples cuentas de Semrush")
+async def start_semrush_signup_batch(request: BatchSignupRequest, background_tasks: BackgroundTasks):
+    """
+    Lanza en segundo plano un proceso que repetirá el registro en Semrush
+    'times' veces de forma secuencial. Usa un delay opcional entre corridas.
+    """
+    MAX_TIMES = 50
+    if request.times > MAX_TIMES:
+        raise HTTPException(status_code=400, detail=f"El máximo permitido es {MAX_TIMES} registros por petición.")
+    print(f"🚀 Petición recibida para multi-registro: {request.times} vez/veces (delay={request.delay_seconds}s).")
+    background_tasks.add_task(run_semrush_signup_flow_batch, request.times, request.delay_seconds or 0.0)
+    return {"message": f"Se programó la ejecución de {request.times} registro(s) en segundo plano."}
+
 
 @router.post("/login", status_code=202, summary="Iniciar Sesión en Semrush")
 async def start_semrush_login(request: SemrushLoginRequest, background_tasks: BackgroundTasks):
