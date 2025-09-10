@@ -13,7 +13,8 @@ proxy_extension
 proxies.txt
 chrome_login_session
 chrome_registration_session
-
+token.json
+credentials.json
 .vscode
 .env
 .env.local  
