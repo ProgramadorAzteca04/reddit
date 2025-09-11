@@ -3,6 +3,7 @@ from app.api.v1.endpoints.drive_campaign import router as drive_campaign_router
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.endpoints import semrush
+from app.api.v1.endpoints import github
 from app.core.config import get_settings
 from app.api.v1.endpoints import reddit
 from fastapi.responses import Response
@@ -34,6 +35,12 @@ app.include_router(
     semrush.router,
     prefix="/semrush",
     tags=["Semrush Automation"]
+)
+
+app.include_router(
+    github.router,
+    prefix="/github",
+    tags=["GitHub Automation"]
 )
 
 # Middleware CORS

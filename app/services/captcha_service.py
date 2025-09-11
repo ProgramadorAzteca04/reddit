@@ -6,6 +6,11 @@ import requests
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
+# 👇 NUEVOS imports para helpers de iframes
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
+
 load_dotenv()
 
 class TwoCaptchaSolver:
@@ -72,11 +77,6 @@ class TwoCaptchaSolver:
                                      **extra) -> Optional[str]:
         """
         Para reCAPTCHA v2 invisible (incl. enterprise).
-        - googlekey: sitekey del sitio
-        - pageurl:   URL actual (aunque no cambie)
-        - invisible=1
-        - enterprise=1 si aplica
-        - data-s: si ves atributo data-s o rqdata en el DOM
         """
         kwargs = {
             "googlekey": sitekey,
@@ -98,6 +98,7 @@ class TwoCaptchaSolver:
             kwargs["userAgent"] = user_agent
         kwargs.update(extra)
         return self.solve("hcaptcha", **kwargs)
+
 
 # --------- Funciones utilitarias para Selenium ---------
 def detect_captcha_type_and_params(driver) -> Dict[str, Any]:
@@ -121,8 +122,7 @@ def detect_captcha_type_and_params(driver) -> Dict[str, Any]:
         out.type='hcaptcha'; out.sitekey = hc.getAttribute('data-hcaptcha-sitekey') || hc.getAttribute('data-sitekey');
         return out;
       }
-      // Si el widget se monta vía JS (invisible/enterprise), intenta leer claves globales
-      // Heurística para enterprise: grecaptcha.enterprise presente
+      // Heurística enterprise
       try {
         if (window.grecaptcha && window.grecaptcha.enterprise) {
           out.type='recaptcha'; out.enterprise=true;
@@ -130,10 +130,9 @@ def detect_captcha_type_and_params(driver) -> Dict[str, Any]:
           out.type='recaptcha';
         }
       } catch(e){}
-      // Busca iframes de recaptcha/hcaptcha
+      // Busca iframes de recaptcha
       const iframes = Array.from(document.querySelectorAll('iframe[src*="recaptcha"]'));
       if (out.type==='recaptcha' || iframes.length){
-        // A veces el sitekey está como k= en el src del iframe
         for (const f of iframes){
           const u = new URL(f.src, location.href);
           const k = u.searchParams.get('k') || u.searchParams.get('render');
@@ -141,6 +140,7 @@ def detect_captcha_type_and_params(driver) -> Dict[str, Any]:
         }
         return out;
       }
+      // Busca iframes de hcaptcha
       const ifrH = Array.from(document.querySelectorAll('iframe[src*="hcaptcha.com"]'));
       if (ifrH.length){
         out.type='hcaptcha';
@@ -158,11 +158,10 @@ def detect_captcha_type_and_params(driver) -> Dict[str, Any]:
 
 def inject_recaptcha_token_and_submit(driver, token: str):
     """
-    Inyecta token en reCAPTCHA v2 (invisible/normal). Intenta disparar callback o submit.
+    Inyecta token en reCAPTCHA v2 (invisible/normal) e intenta submit.
     """
     driver.execute_script("""
       (function(tok){
-        // Asegurar el textarea
         let ta = document.getElementById('g-recaptcha-response');
         if (!ta){
           ta = document.createElement('textarea');
@@ -174,27 +173,18 @@ def inject_recaptcha_token_and_submit(driver, token: str):
         }
         ta.value = tok;
 
-        // Muchas integraciones usan input oculto 'g-recaptcha-response'
         const all = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
         all.forEach(e => e.value = tok);
 
-        // Tratar de ejecutar callback si existe
-        if (window.grecaptcha){
-          try{
-            if (grecaptcha.getResponse && !grecaptcha.getResponse()){
-              // No hace falta ejecutar, ya tenemos respuesta
-            }
-          }catch(e){}
-        }
-        // Si hay form visible, intenta submit
+        // Disparar eventos para frameworks
+        try { ta.dispatchEvent(new Event('input', {bubbles:true})); } catch(e){}
+        try { ta.dispatchEvent(new Event('change', {bubbles:true})); } catch(e){}
+
+        // Intentar submit
         const form = ta.form || document.querySelector('form[method][action], form');
         if (form) {
-          // Disparar un change/input para que frameworks detecten el valor
-          ta.dispatchEvent(new Event('input', {bubbles:true}));
-          ta.dispatchEvent(new Event('change', {bubbles:true}));
           form.submit();
         } else {
-          // fallback: dispara eventos globales comunes
           document.dispatchEvent(new Event('captcha-solved', {bubbles:true}));
         }
       })(arguments[0]);
@@ -211,8 +201,8 @@ def inject_hcaptcha_token_and_submit(driver, token: str):
           document.body.appendChild(ta);
         }
         ta.value = tok;
-        ta.dispatchEvent(new Event('input', {bubbles:true}));
-        ta.dispatchEvent(new Event('change', {bubbles:true}));
+        try { ta.dispatchEvent(new Event('input', {bubbles:true})); } catch(e){}
+        try { ta.dispatchEvent(new Event('change', {bubbles:true})); } catch(e){}
 
         const form = ta.form || document.querySelector('form[method][action], form');
         if (form) form.submit();
@@ -260,3 +250,135 @@ def solve_current_captcha_with_2captcha(driver, solver: TwoCaptchaSolver,
         return True
 
     return False
+
+
+# =========================
+# NUEVOS helpers movidos aquí
+# =========================
+def _extract_sitekey_from_bframe_src(src: str) -> Optional[str]:
+    """Extrae el sitekey (param 'k') desde la URL del iframe bframe de reCAPTCHA."""
+    if not src:
+        return None
+    try:
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(src).query)
+        return q.get("k", [None])[0]
+    except Exception:
+        return None
+
+def inject_recaptcha_token_no_submit(driver, token: str) -> None:
+    """
+    Inyecta token en g-recaptcha-response e intenta disparar callbacks sin hacer submit.
+    Útil cuando el submit lo realiza la app tras validar el token.
+    """
+    driver.execute_script("""
+      (function(tok){
+        var ta = document.getElementById('g-recaptcha-response');
+        if(!ta){
+          ta = document.createElement('textarea');
+          ta.id = 'g-recaptcha-response';
+          ta.name = 'g-recaptcha-response';
+          ta.style.display='block';
+          ta.style.width='1px';
+          ta.style.height='1px';
+          ta.style.opacity='0.01';
+          ta.style.position='absolute';
+          ta.style.left='-9999px';
+          document.body.appendChild(ta);
+        }
+        ta.value = tok;
+        var all = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
+        all.forEach(function(e){ e.value = tok; });
+
+        ['input','change'].forEach(function(ev){
+          try { ta.dispatchEvent(new Event(ev, {bubbles:true})); } catch(_){}
+        });
+
+        function safeInvoke(cb){ try { cb(tok); } catch(e){} }
+        var invoked = false;
+        try {
+          if (window.grecaptcha && window.grecaptcha.enterprise && typeof window.grecaptcha.enterprise.getResponse === 'function') {
+            var cfg = window.___grecaptcha_cfg && window.___grecaptcha_cfg.clients || {};
+            for (var i in cfg){ var ci = cfg[i];
+              for (var j in ci){ var cj = ci[j];
+                for (var k in cj){ var ck = cj[k];
+                  if (ck && typeof ck.callback === 'function') { safeInvoke(ck.callback); invoked = true; }
+                  if (ck && ck.sitekey) { if (ck.b && typeof ck.b.callback === 'function') { safeInvoke(ck.b.callback); invoked = true; } }
+        }}}}
+          else if (window.grecaptcha) {
+            var cfg2 = window.___grecaptcha_cfg && window.___grecaptcha_cfg.clients || {};
+            for (var i2 in cfg2){ var c2 = cfg2[i2];
+              for (var j2 in c2){ var cj2 = c2[j2];
+                for (var k2 in cj2){ var ck2 = cj2[k2];
+                  if (ck2 && typeof ck2.callback === 'function') { safeInvoke(ck2.callback); invoked = true; }
+                  if (ck2 && ck2.b && typeof ck2.b.callback === 'function') { safeInvoke(ck2.b.callback); invoked = true; }
+        }}}}
+        } catch(e){}
+        if (!invoked) {
+          try { document.dispatchEvent(new CustomEvent('recaptcha-token-injected', {detail:{token: tok}})); } catch(_){}
+        }
+      })(arguments[0]);
+    """, token)
+
+def solve_recaptcha_in_iframes(driver,
+                               wait: "WebDriverWait",
+                               user_agent: Optional[str] = None,
+                               max_attempts: int = 2,
+                               submit: bool = False) -> bool:
+    """
+    Detecta iframes de reCAPTCHA (api2/bframe), extrae sitekey, pide token a 2Captcha e inyecta.
+    Si submit=True, usa inject_recaptcha_token_and_submit; de lo contrario, inject_recaptcha_token_no_submit.
+    No lanza; devuelve True si se inyectó correctamente.
+    """
+    try:
+        time.sleep(2)
+        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[src*='api2/bframe' i], iframe[src*='recaptcha' i]")
+        print(f"   -> Detección de iframes reCAPTCHA: encontrados {len(iframes)}")
+        if not iframes:
+            print("   -> No se detectó iframe de reCAPTCHA; no se resuelve.")
+            return False
+
+        sitekey = None
+        for ifr in iframes:
+            src = ifr.get_attribute("src") or ""
+            k = _extract_sitekey_from_bframe_src(src)
+            if k:
+                sitekey = k
+                break
+
+        if not sitekey:
+            print("   -> ⚠️ No se pudo extraer sitekey (param k) de los iframes.")
+            return False
+
+        print(f"   -> 🎯 Sitekey detectado: {sitekey}")
+        solver = TwoCaptchaSolver()
+        for attempt in range(1, max_attempts + 1):
+            print(f"      -> Solicitando token a 2Captcha (intento {attempt}/{max_attempts})...")
+            token = solver.solve(
+                method="userrecaptcha",
+                googlekey=sitekey,
+                pageurl=driver.current_url,
+                invisible=1,
+                **({"userAgent": user_agent} if user_agent else {})
+            )
+            if token:
+                print("      -> ✅ Token recibido. Inyectando en la página...")
+                if submit:
+                    inject_recaptcha_token_and_submit(driver, token)
+                else:
+                    inject_recaptcha_token_no_submit(driver, token)
+                try:
+                    WebDriverWait(driver, 10).until_not(
+                        lambda d: d.find_elements(By.CSS_SELECTOR, "iframe[src*='api2/bframe' i], .sso-recaptcha-popup")
+                    )
+                except TimeoutException:
+                    pass
+                return True
+            print("      -> ❌ 2Captcha no devolvió token en este intento.")
+            time.sleep(3)
+
+        print("   -> 🚨 No se pudo resolver el reCAPTCHA tras los reintentos.")
+        return False
+    except Exception as e:
+        print(f"   -> ❌ Error general al resolver el reCAPTCHA: {e}")
+        return False

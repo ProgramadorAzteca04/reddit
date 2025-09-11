@@ -6,7 +6,6 @@ from selenium.webdriver.support import expected_conditions as EC
 from app.services.semrush.login_service import _perform_logout
 from app.services.reddit.proxy_service import ProxyManager
 from selenium.webdriver.remote.webdriver import WebDriver
-from app.services.captcha_service import TwoCaptchaSolver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import (
     TimeoutException,
@@ -22,6 +21,8 @@ import traceback
 import time
 import os
 
+# ✅ NUEVO: importar el helper único de CAPTCHA desde el servicio dedicado
+from app.services.captcha_service import solve_recaptcha_in_iframes
 
 # ─────────────────────────────────────────────────────────────
 # Helpers de resiliencia (no alteran la lógica; la endurecen)
@@ -175,139 +176,6 @@ def _handle_survey_step(driver: WebDriver, wait: WebDriverWait, survey_step: int
         return False
 
 
-# ==========================
-#   CAPTCHA: RESOLVER v2
-# ==========================
-def _extract_sitekey_from_bframe_src(src: str) -> str | None:
-    """Extrae el sitekey (param 'k') desde la URL del iframe bframe de reCAPTCHA."""
-    if not src:
-        return None
-    try:
-        from urllib.parse import urlparse, parse_qs
-        q = parse_qs(urlparse(src).query)
-        k = q.get("k", [None])[0]
-        return k
-    except Exception:
-        return None
-
-def _inject_recaptcha_token_no_submit(driver: WebDriver, token: str) -> None:
-    """Inyecta token en g-recaptcha-response e intenta disparar callbacks sin hacer submit."""
-    driver.execute_script("""
-      (function(tok){
-        var ta = document.getElementById('g-recaptcha-response');
-        if(!ta){
-          ta = document.createElement('textarea');
-          ta.id = 'g-recaptcha-response';
-          ta.name = 'g-recaptcha-response';
-          ta.style.display='block';
-          ta.style.width='1px';
-          ta.style.height='1px';
-          ta.style.opacity='0.01';
-          ta.style.position='absolute';
-          ta.style.left='-9999px';
-          document.body.appendChild(ta);
-        }
-        ta.value = tok;
-        var all = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
-        all.forEach(function(e){ e.value = tok; });
-        var evts = ['input','change'];
-        evts.forEach(function(e){
-          try { ta.dispatchEvent(new Event(e, {bubbles:true})); } catch(_){}
-        });
-        function safeInvoke(cb){ try { cb(tok); } catch(e){} }
-        var invoked = false;
-        try {
-          if (window.grecaptcha && window.grecaptcha.enterprise && typeof window.grecaptcha.enterprise.getResponse === 'function') {
-            var cfg = window.___grecaptcha_cfg && window.___grecaptcha_cfg.clients || {};
-            for (var i in cfg){ var ci = cfg[i];
-              for (var j in ci){ var cj = ci[j];
-                for (var k in cj){ var ck = cj[k];
-                  if (ck && typeof ck.callback === 'function') { safeInvoke(ck.callback); invoked = true; }
-                  if (ck && ck.sitekey) { if (ck.b && typeof ck.b.callback === 'function') { safeInvoke(ck.b.callback); invoked = true; } }
-        }}}}
-          else if (window.grecaptcha) {
-            var cfg2 = window.___grecaptcha_cfg && window.___grecaptcha_cfg.clients || {};
-            for (var i2 in cfg2){ var c2 = cfg2[i2];
-              for (var j2 in c2){ var cj2 = c2[j2];
-                for (var k2 in cj2){ var ck2 = cj2[k2];
-                  if (ck2 && typeof ck2.callback === 'function') { safeInvoke(ck2.callback); invoked = true; }
-                  if (ck2 && ck2.b && typeof ck2.b.callback === 'function') { safeInvoke(ck2.b.callback); invoked = true; }
-        }}}}
-        } catch(e){}
-        if (!invoked) {
-          try { document.dispatchEvent(new CustomEvent('recaptcha-token-injected', {detail:{token: tok}})); } catch(_){}
-        }
-      })(arguments[0]);
-    """, token)
-
-def _solve_semrush_recaptcha_iframe(driver: WebDriver, wait: WebDriverWait, user_agent: str | None, max_attempts: int = 2) -> bool:
-    """
-    Detecta iframe api2/bframe, extrae sitekey, pide token a 2Captcha e inyecta.
-    Devuelve True si se resolvió e inyectó; no lanza.
-    """
-    try:
-        _sleep(2)
-        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe[src*='api2/bframe' i], iframe[src*='recaptcha' i]")
-        print(f"   -> Detección de iframes reCAPTCHA: encontrados {len(iframes)}")
-        if not iframes:
-            print("   -> No se detectó iframe de reCAPTCHA; no se resuelve.")
-            return False
-
-        sitekey = None
-        iframe_src = None
-        for ifr in iframes:
-            src = ifr.get_attribute("src") or ""
-            k = _extract_sitekey_from_bframe_src(src)
-            if k:
-                sitekey = k
-                iframe_src = src
-                break
-
-        if not sitekey:
-            print("   -> ⚠️ No se pudo extraer sitekey (param k) de los iframes.")
-            return False
-
-        print(f"   -> 🎯 Sitekey detectado: {sitekey}")
-        if iframe_src:
-            print(f"      -> SRC del iframe: {iframe_src}")
-
-        solver = TwoCaptchaSolver()
-        attempt = 1
-        while attempt <= max_attempts:
-            print(f"      -> Solicitando token a 2Captcha (intento {attempt}/{max_attempts})...")
-            try:
-                token = solver.solve(
-                    method="userrecaptcha",
-                    googlekey=sitekey,
-                    pageurl=driver.current_url,
-                    invisible=1,
-                    **({"userAgent": user_agent} if user_agent else {})
-                )
-                if token:
-                    print("      -> ✅ Token recibido. Inyectando en la página...")
-                    _inject_recaptcha_token_no_submit(driver, token)
-                    try:
-                        WebDriverWait(driver, 10).until_not(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='api2/bframe' i], .sso-recaptcha-popup"))
-                        )
-                    except TimeoutException:
-                        pass
-                    return True
-                else:
-                    print("      -> ❌ 2Captcha no devolvió token.")
-            except Exception as e:
-                print(f"      -> ❌ Error solicitando/injectando token: {e}")
-            attempt += 1
-            _sleep(3)
-
-        print("   -> 🚨 No se pudo resolver el reCAPTCHA tras los reintentos.")
-        return False
-
-    except Exception as e:
-        print(f"   -> ❌ Error general al resolver el reCAPTCHA: {e}")
-        return False
-
-
 def run_semrush_signup_flow():
     """
     Orquesta el flujo de registro completo en Semrush, maneja encuestas y pasos opcionales.
@@ -370,9 +238,9 @@ def run_semrush_signup_flow():
             return
         print("   -> ✅ Formulario de registro inicial enviado.")
 
-        # reCAPTCHA (si aparece)
+        # reCAPTCHA (si aparece) — ahora delegado al servicio de captcha
         print("   -> ⚠️ Verificando si hay reCAPTCHA para resolver...")
-        solved = _solve_semrush_recaptcha_iframe(driver, wait, user_agent=user_agent, max_attempts=2)
+        solved = solve_recaptcha_in_iframes(driver, wait, user_agent=user_agent, max_attempts=2, submit=False)
         print("   -> ✅ reCAPTCHA resuelto correctamente." if solved else "   -> (No hubo captcha o no se pudo resolver; continúo)")
 
         # Esperar correo de activación
@@ -404,7 +272,7 @@ def run_semrush_signup_flow():
         # Segundo captcha (posible)
         _sleep(2)
         print("\n   -> ⚠️ Verificando si apareció un segundo reCAPTCHA…")
-        second_ok = _solve_semrush_recaptcha_iframe(driver, wait, user_agent=user_agent, max_attempts=2)
+        second_ok = solve_recaptcha_in_iframes(driver, wait, user_agent=user_agent, max_attempts=2, submit=False)
         print("   -> ✅ Segundo reCAPTCHA resuelto correctamente." if second_ok else "   -> (No hubo segundo captcha o no se resolvió; continúo).")
 
         # Bucle de encuestas
@@ -514,6 +382,7 @@ def run_semrush_signup_flow():
         print("✅ SERVICIO FINALIZADO: Flujo de Semrush.")
         print("="*60 + "\n")
 
+
 # ─────────────────────────────────────────────────────────────
 # Batch: ejecutar N veces el flujo de registro (secuencial)
 # ─────────────────────────────────────────────────────────────
@@ -523,7 +392,7 @@ def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> No
     Cada iteración se aísla con try/except para que un fallo no
     interrumpa las siguientes. No devuelve nada.
     """
-    # Sanitizar parámetros para evitar errores accidentales
+    # Sanitizar parámetros
     try:
         times = int(times)
     except Exception:
@@ -539,7 +408,7 @@ def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> No
     except Exception:
         delay_seconds = 10.0
 
-    MAX_TIMES = 50  # límite de seguridad (puedes ajustarlo)
+    MAX_TIMES = 50  # límite de seguridad
     if times > MAX_TIMES:
         print(f"⚠️  times={times} supera el máximo permitido ({MAX_TIMES}); se ajusta a {MAX_TIMES}.")
         times = MAX_TIMES
@@ -549,7 +418,6 @@ def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> No
         try:
             run_semrush_signup_flow()
         except Exception as e:
-            # Aislamos el error para que el ciclo no se reviente
             print(f"⚠️  Error en el registro #{i}: {e}")
             import traceback as _tb
             _tb.print_exc()
