@@ -1,6 +1,9 @@
 import os
 import random
 from datetime import datetime
+import re
+from typing import Optional
+import unicodedata
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -278,3 +281,87 @@ def generate_comment_for_post(post_title: str) -> str:
     except Exception as e:
         print(f"   -> 🚨 Error al generar comentario: {e}")
         return "Estoy totalmente de acuerdo con esto."
+    
+_USERNAME_ALLOWED = re.compile(r"[^a-z0-9-]")  # todo lo que NO sea permitido
+_MULTIDASH = re.compile(r"-{2,}")
+
+_ADJETIVOS = [
+    "agil", "bravo", "creativo", "discreto", "epico", "firme", "gentil",
+    "humilde", "ingenioso", "jovial", "leal", "noble", "optimista", "prudente",
+    "querido", "sereno", "tenaz", "valiente", "vivo", "zen"
+]
+_SUSTANTIVOS = [
+    "avion", "bosque", "cafe", "cactus", "cometa", "delfin", "granito",
+    "halcon", "isla", "lince", "marea", "naranja", "panda", "quimera",
+    "rio", "sol", "trigal", "ulises", "viento", "zorro"
+]
+
+def _strip_accents(s: str) -> str:
+    """Convierte 'canción-Ñ' -> 'cancion-n' usando NFKD y eliminando marcas."""
+    nfkd = unicodedata.normalize("NFKD", s)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+def _sanitize_username(raw: str) -> str:
+    """
+    Aplica reglas:
+    - solo [a-z0-9-]
+    - guiones múltiples -> uno
+    - sin guion al inicio/fin
+    """
+    s = raw.lower()
+    s = _strip_accents(s)
+    s = _USERNAME_ALLOWED.sub("-", s)     # reemplaza caracteres no permitidos por '-'
+    s = _MULTIDASH.sub("-", s)            # colapsa --- -> -
+    s = s.strip("-")                      # quita guiones en extremos
+    return s
+
+def is_valid_username(u: str) -> bool:
+    """Validador estricto de la regla pedida."""
+    return bool(u) and u == _sanitize_username(u)
+
+def generate_human_username(seed: Optional[int] = None, max_len: int = 20, with_number_prob: float = 0.4) -> str:
+    """
+    Genera un username humano tipo 'agil-zorro' o 'agil-zorro-27' cumpliendo:
+    - solo alfanumérico y '-'
+    - no empieza/termina con '-'
+    - longitud máxima configurable (default 20)
+
+    Args:
+        seed: fija la semilla aleatoria para reproducibilidad (opcional)
+        max_len: longitud máxima del username final
+        with_number_prob: probabilidad de añadir sufijo numérico
+
+    Returns:
+        str: username válido
+    """
+    rnd = random.Random(seed)
+
+    for _ in range(30):  # hasta 30 intentos por si recortes dejan guion al final
+        adj = rnd.choice(_ADJETIVOS)
+        noun = rnd.choice(_SUSTANTIVOS)
+        base = f"{adj}-{noun}"
+
+        # 40% de las veces, añade un número corto para variedad humana
+        if rnd.random() < with_number_prob:
+            num = str(rnd.randint(2, 999))  # evita '1' para que no parezca placeholder
+            candidate = f"{base}-{num}"
+        else:
+            candidate = base
+
+        candidate = _sanitize_username(candidate)
+
+        # aplicar límite de longitud sin romper reglas
+        if len(candidate) > max_len:
+            candidate = candidate[:max_len]
+            candidate = candidate.strip("-")           # puede cortar en '-'
+            candidate = _MULTIDASH.sub("-", candidate) # por si acaso
+
+        # última garantía de validez
+        if is_valid_username(candidate):
+            return candidate
+
+    # Fallback ultra seguro si todos los intentos fallaran
+    safe = _sanitize_username("usuario-"+str(random.randint(10, 999)))
+    if len(safe) > max_len:
+        safe = safe[:max_len].strip("-")
+    return safe
