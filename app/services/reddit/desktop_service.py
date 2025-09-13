@@ -88,9 +88,20 @@ class HumanInteractionUtils:
 
     @staticmethod
     def generate_password(length: int = 12) -> str:
-        """Genera una contraseña segura y aleatoria."""
-        characters = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
-        password = ''.join(secrets.choice(characters) for _ in range(length))
+        """Genera una contraseña segura y aleatoria con al menos un número."""
+        if length < 2:
+            raise ValueError("La contraseña debe tener al menos 2 caracteres")
+        # Conjuntos de caracteres
+        letters_symbols = string.ascii_letters + "!@#$%^&*()-_=+"
+        digits = string.digits
+        all_chars = letters_symbols + digits
+        # Garantizar al menos un número
+        password_chars = [secrets.choice(digits)]
+        # Resto de caracteres
+        password_chars += [secrets.choice(all_chars) for _ in range(length - 1)]
+        # Barajar para que el número no quede fijo en la primera posición
+        random.shuffle(password_chars)
+        password = ''.join(password_chars)
         print(f"🔒 Contraseña generada: {'*' * length}")
         return password
         
