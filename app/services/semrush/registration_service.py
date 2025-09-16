@@ -1,4 +1,3 @@
-# app/services/semrush/registration_service.py
 from app.services.email_reader_service import get_latest_verification_code
 from app.services.reddit.desktop_service import HumanInteractionUtils
 from app.services.reddit.browser_service import BrowserManagerProxy
@@ -20,6 +19,7 @@ from app.db.database import get_db
 import traceback
 import time
 import os
+import unicodedata
 
 # ✅ NUEVO: importar el helper único de CAPTCHA desde el servicio dedicado
 from app.services.captcha_service import solve_recaptcha_in_iframes
@@ -30,11 +30,13 @@ from app.services.captcha_service import solve_recaptcha_in_iframes
 DEFAULT_STEP_TIMEOUT = 30
 DEFAULT_RETRIES = 2
 
+
 def _sleep(s: float):
     try:
         time.sleep(s)
     except Exception:
         pass
+
 
 def _wait_clickable(wait: "WebDriverWait", driver: "WebDriver", locator, label: str, timeout: int | None = None):
     """Espera elemento clickable; devuelve el WebElement o None (no lanza)."""
@@ -49,6 +51,7 @@ def _wait_clickable(wait: "WebDriverWait", driver: "WebDriver", locator, label: 
         print(f"      -> ⚠️ Error esperando '{label}': {e}")
         return None
 
+
 def _wait_visible(wait: "WebDriverWait", driver: "WebDriver", locator, label: str, timeout: int | None = None) -> bool:
     """Espera visibilidad; True/False (no lanza)."""
     try:
@@ -62,6 +65,7 @@ def _wait_visible(wait: "WebDriverWait", driver: "WebDriver", locator, label: st
     except Exception as e:
         print(f"      -> ⚠️ Error de visibilidad en '{label}': {e}")
         return False
+
 
 def _click_with_fallback(driver: "WebDriver", element, label: str) -> bool:
     """Clic normal; si hay overlay, scroll + JS click."""
@@ -83,6 +87,7 @@ def _click_with_fallback(driver: "WebDriver", element, label: str) -> bool:
         print(f"      -> ⚠️ Error al hacer click en '{label}': {e}")
         return False
 
+
 def _wait_and_click(wait: "WebDriverWait", driver: "WebDriver", locator, label: str,
                     retries: int = DEFAULT_RETRIES, timeout: int | None = None) -> bool:
     """Espera y hace click con reintentos y fallback. No lanza."""
@@ -95,6 +100,7 @@ def _wait_and_click(wait: "WebDriverWait", driver: "WebDriver", locator, label: 
         _sleep(1)
     print(f"      -> ❌ No se pudo hacer click en '{label}' tras {retries} intentos.")
     return False
+
 
 def _send_text_to_input(wait: "WebDriverWait", driver: "WebDriver", locator, text: str,
                         label: str, clear_first: bool = True, timeout: int | None = None) -> bool:
@@ -122,6 +128,7 @@ def _send_text_to_input(wait: "WebDriverWait", driver: "WebDriver", locator, tex
     except Exception as e:
         print(f"      -> ⚠️ No se pudo escribir en '{label}': {e}")
         return False
+
 
 def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
     """Intenta cerrar sesión sin romper si falla."""
@@ -175,6 +182,32 @@ def _handle_survey_step(driver: WebDriver, wait: WebDriverWait, survey_step: int
         print(f"      -> ⚠️ Error manejando encuesta: {e}")
         return False
 
+
+# ─────────────────────────────────────────────────────────────
+# UTF-8 Sanitizer: asegura que lo que enviamos a la BD sea str UTF-8
+# ─────────────────────────────────────────────────────────────
+
+def _ensure_str_utf8(v):
+    """Devuelve str seguro en UTF-8 desde str/bytes/otros. Conserva info al máximo."""
+    if v is None:
+        return None
+    if isinstance(v, bytes):
+        for enc in ("utf-8", "cp1252", "latin-1"):
+            try:
+                s = v.decode(enc)
+                return unicodedata.normalize("NFC", s)
+            except Exception:
+                pass
+        # Último recurso: reemplazar caracteres problemáticos
+        return v.decode("utf-8", errors="replace")
+    if isinstance(v, str):
+        return unicodedata.normalize("NFC", v)
+    return unicodedata.normalize("NFC", str(v))
+
+
+# ─────────────────────────────────────────────────────────────
+# Flujo principal de registro
+# ─────────────────────────────────────────────────────────────
 
 def run_semrush_signup_flow():
     """
@@ -338,16 +371,22 @@ def run_semrush_signup_flow():
         else:
             print("      -> No se encontró la pantalla de marketing source (paso opcional).")
 
-        # Guardar en BD
+        # Guardar en BD (con saneo de codificación)
         print("\n   -> 💾 Intentando guardar la nueva cuenta en la base de datos...")
         db = next(get_db())
         try:
+            email_safe = _ensure_str_utf8(email_to_use)
+            password_safe = _ensure_str_utf8(password_to_use)
+            proxy_safe = _ensure_str_utf8(proxy_info.get("host"))
+            port_safe = proxy_info.get("port")  # puede ser int/str, no forzamos
+            note_safe = _ensure_str_utf8("Registrado automáticamente")
+
             new_credential = CredentialSemrush(
-                email=email_to_use,
-                password=password_to_use,
-                proxy=proxy_info.get("host"),
-                port=proxy_info.get("port"),
-                note="Registrado automáticamente"
+                email=email_safe,
+                password=password_safe,
+                proxy=proxy_safe,
+                port=port_safe,
+                note=note_safe
             )
             db.add(new_credential)
             db.commit()
@@ -395,9 +434,11 @@ def run_semrush_signup_flow():
         print("✅ SERVICIO FINALIZADO: Flujo de Semrush.")
         print("="*60 + "\n")
 
+
 # ─────────────────────────────────────────────────────────────
 # Batch: ejecutar N veces el flujo de registro (secuencial)
 # ─────────────────────────────────────────────────────────────
+
 def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> None:
     """
     Ejecuta N veces el flujo de registro de forma secuencial.
