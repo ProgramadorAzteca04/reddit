@@ -1,3 +1,4 @@
+# app/services/semrush/registration_service.py
 from app.services.email_reader_service import get_latest_verification_code
 from app.services.reddit.desktop_service import HumanInteractionUtils
 from app.services.reddit.browser_service import BrowserManagerProxy
@@ -16,6 +17,7 @@ from app.models.semrush_models import CredentialSemrush
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from app.db.database import get_db
+from sqlalchemy import text as sql_text  # para SET client_encoding si aplica
 import traceback
 import time
 import os
@@ -184,7 +186,7 @@ def _handle_survey_step(driver: WebDriver, wait: WebDriverWait, survey_step: int
 
 
 # ─────────────────────────────────────────────────────────────
-# UTF-8 Sanitizer: asegura que lo que enviamos a la BD sea str UTF-8
+# UTF-8 Sanitizer y logging seguro
 # ─────────────────────────────────────────────────────────────
 
 def _ensure_str_utf8(v):
@@ -198,11 +200,40 @@ def _ensure_str_utf8(v):
                 return unicodedata.normalize("NFC", s)
             except Exception:
                 pass
-        # Último recurso: reemplazar caracteres problemáticos
         return v.decode("utf-8", errors="replace")
     if isinstance(v, str):
         return unicodedata.normalize("NFC", v)
     return unicodedata.normalize("NFC", str(v))
+
+
+def _sanitize_field(v, maxlen=None):
+    """Normaliza, recorta espacios y limpia controles invisibles."""
+    s = _ensure_str_utf8(v)
+    if s is None:
+        return None
+    s = s.replace("\uFEFF", "").strip()
+    # elimina separadores invisibles comunes
+    s = s.replace("\u200B", "").replace("\u2060", "")
+    if maxlen is not None and len(s) > maxlen:
+        s = s[:maxlen]
+    return s
+
+
+def _safe_exc_to_text(exc) -> str:
+    """Convierte Exception a texto sin reventar por bytes no-UTF8."""
+    try:
+        return str(exc)
+    except Exception:
+        try:
+            # intenta con el primer arg
+            if exc.args:
+                msg = exc.args[0]
+                if isinstance(msg, bytes):
+                    return msg.decode("utf-8", errors="replace")
+                return _ensure_str_utf8(msg)
+        except Exception:
+            pass
+        return f"{exc.__class__.__name__}: <mensaje no decodificable>"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -271,7 +302,7 @@ def run_semrush_signup_flow():
             return
         print("   -> ✅ Formulario de registro inicial enviado.")
 
-        # reCAPTCHA (si aparece) — ahora delegado al servicio de captcha
+        # reCAPTCHA (si aparece)
         print("   -> ⚠️ Verificando si hay reCAPTCHA para resolver...")
         solved = solve_recaptcha_in_iframes(driver, wait, user_agent=user_agent, max_attempts=2, submit=False)
         print("   -> ✅ reCAPTCHA resuelto correctamente." if solved else "   -> (No hubo captcha o no se pudo resolver; continúo)")
@@ -375,11 +406,17 @@ def run_semrush_signup_flow():
         print("\n   -> 💾 Intentando guardar la nueva cuenta en la base de datos...")
         db = next(get_db())
         try:
-            email_safe = _ensure_str_utf8(email_to_use)
-            password_safe = _ensure_str_utf8(password_to_use)
-            proxy_safe = _ensure_str_utf8(proxy_info.get("host"))
-            port_safe = proxy_info.get("port")  # puede ser int/str, no forzamos
-            note_safe = _ensure_str_utf8("Registrado automáticamente")
+            # Asegura client_encoding UTF8 si el driver/servidor lo permite
+            try:
+                db.execute(sql_text("SET client_encoding TO 'UTF8'"))
+            except Exception:
+                pass  # si no aplica (ya está en UTF8), no romper
+
+            email_safe    = _sanitize_field(email_to_use,   maxlen=255)
+            password_safe = _sanitize_field(password_to_use, maxlen=255)
+            proxy_safe    = _sanitize_field((proxy_info.get("host") or ""), maxlen=255)
+            port_safe     = _sanitize_field(str(proxy_info.get("port") or ""), maxlen=10)
+            note_safe     = _sanitize_field("Registrado automáticamente", maxlen=255)
 
             new_credential = CredentialSemrush(
                 email=email_safe,
@@ -403,30 +440,41 @@ def run_semrush_signup_flow():
             _best_effort_logout(driver, WebDriverWait(driver, 20))
 
         except Exception as db_error:
-            print(f"      -> 🚨 ERROR al guardar en la base de datos: {db_error}")
-            db.rollback()
+            # ⚠️ Log seguro: no dejes que el propio print reviente por bytes raros
+            msg = _safe_exc_to_text(db_error)
+            print(f"      -> 🚨 ERROR al guardar en la base de datos: {msg}")
+            try:
+                db.rollback()
+            except Exception:
+                pass
         finally:
-            db.close()
+            try:
+                db.close()
+            except Exception:
+                pass
 
         print("\n   -> Registro completado. La ventana permanecerá abierta por 20 segundos.")
         _sleep(20)
 
     except Exception as e:
-        print(f"\n🚨 ERROR FATAL durante el flujo de Semrush: {e}")
-        traceback.print_exc()
+        print(f"\n🚨 ERROR FATAL durante el flujo de Semrush: {_safe_exc_to_text(e)}")
+        try:
+            traceback.print_exc()
+        except Exception:
+            pass
     finally:
         try:
             if driver:
                 print("🔐 Intentando logout FINAL (último paso) antes de cerrar el navegador…")
                 try:
                     driver.get("https://es.semrush.com/")
-                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
+                    WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
                 except Exception:
                     pass
                 # Llamada al logout robusto (usa primero tus dos selectores exactos)
                 _perform_logout(driver, WebDriverWait(driver, 20))
         except Exception as e:
-            print(f"⚠️ Error intentando logout final: {e}")
+            print(f"⚠️ Error intentando logout final: {_safe_exc_to_text(e)}")
         finally:
             if browser_manager:
                 browser_manager.quit_driver()
@@ -471,9 +519,12 @@ def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> No
         try:
             run_semrush_signup_flow()
         except Exception as e:
-            print(f"⚠️  Error en el registro #{i}: {e}")
-            import traceback as _tb
-            _tb.print_exc()
+            print(f"⚠️  Error en el registro #{i}: {_safe_exc_to_text(e)}")
+            try:
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
         finally:
             if i < times and delay_seconds > 0:
                 print(f"⏳ Esperando {delay_seconds} segundos antes del siguiente registro...")
