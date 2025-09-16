@@ -1,5 +1,3 @@
-# app/services/semrush/login_service.py
-
 from app.api.v1.endpoints.drive_campaign import (
     build_drive_client,
     get_campaign_phrases_by_city,
@@ -33,11 +31,13 @@ DEFAULT_STEP_TIMEOUT = 30
 LOGOUT_TIMEOUT = 20
 DEFAULT_RETRIES = 2
 
+
 def _sleep(s: float):
     try:
         time.sleep(s)
     except Exception:
         pass
+
 
 def _wait_clickable(wait: "WebDriverWait", driver: "WebDriver", locator, label: str, timeout: int | None = None):
     """Espera un elemento clickable con timeout opcional. Retorna el elemento o None (no lanza)."""
@@ -51,6 +51,7 @@ def _wait_clickable(wait: "WebDriverWait", driver: "WebDriver", locator, label: 
     except Exception as e:
         print(f"      -> ⚠️ Error esperando '{label}': {e}")
         return None
+
 
 def _click_with_fallback(driver: "WebDriver", element, label: str) -> bool:
     """Intenta click normal; si es interceptado u obsoleto, intenta scroll + JS click."""
@@ -75,6 +76,7 @@ def _click_with_fallback(driver: "WebDriver", element, label: str) -> bool:
         print(f"      -> ⚠️ WebDriverException al hacer click en '{label}': {e}")
         return False
 
+
 def _wait_and_click(wait: "WebDriverWait", driver: "WebDriver", locator, label: str,
                     retries: int = DEFAULT_RETRIES, timeout: int | None = None) -> bool:
     """Espera y hace click con reintentos y fallback. No lanza excepciones."""
@@ -87,6 +89,7 @@ def _wait_and_click(wait: "WebDriverWait", driver: "WebDriver", locator, label: 
         _sleep(1.0)
     print(f"      -> ❌ No se pudo hacer click en '{label}' tras {retries} intentos.")
     return False
+
 
 def _send_text_to_input(wait: "WebDriverWait", driver: "WebDriver", locator, text: str,
                         label: str, clear_first: bool = True, timeout: int | None = None) -> bool:
@@ -118,6 +121,7 @@ def _send_text_to_input(wait: "WebDriverWait", driver: "WebDriver", locator, tex
         print(f"      -> ⚠️ No se pudo escribir en '{label}': {e}")
         return False
 
+
 def _wait_visible(wait: "WebDriverWait", driver: "WebDriver", locator, label: str, timeout: int | None = None) -> bool:
     """Espera visibilidad; retorna True/False sin lanzar excepción."""
     try:
@@ -132,6 +136,7 @@ def _wait_visible(wait: "WebDriverWait", driver: "WebDriver", locator, label: st
         print(f"      -> ⚠️ Error de visibilidad en '{label}': {e}")
         return False
 
+
 def _press_first_suggestion(el, label: str) -> bool:
     """Flecha abajo + Enter, con esperas suaves."""
     try:
@@ -144,6 +149,7 @@ def _press_first_suggestion(el, label: str) -> bool:
         print(f"      -> ⚠️ No se pudo seleccionar sugerencia en '{label}': {e}")
         return False
 
+
 def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
     """Intenta cerrar sesión sin romper si falla."""
     try:
@@ -153,8 +159,17 @@ def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Logout (igual a tu lógica original, con mensajes y manejo básico)
+# Logout robusto (prioriza los selectores exactos proporcionados por el usuario)
 # ───────────────────────────────────────────────────────────────────────────────
+
+def _open_home(driver: WebDriver):
+    """Asegura que el header esté presente antes de intentar el logout."""
+    try:
+        driver.get("https://es.semrush.com/")
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
+    except Exception:
+        pass
+
 
 def _is_logged_out(driver: WebDriver) -> bool:
     """
@@ -162,7 +177,6 @@ def _is_logged_out(driver: WebDriver) -> bool:
     o ausencia clara de avatar de usuario.
     """
     try:
-        # Botón login en distintas variantes (ES/EN)
         login_candidates = [
             (By.CSS_SELECTOR, '[data-test="login-button"]'),
             (By.XPATH, "//a[contains(., 'Iniciar sesión') or contains(., 'Log in')]"),
@@ -171,10 +185,12 @@ def _is_logged_out(driver: WebDriver) -> bool:
         for by, sel in login_candidates:
             if driver.find_elements(by, sel):
                 return True
-        # Si no encontramos login, pero tampoco avatar, puede ser logged-out en una pública:
+
         avatar_candidates = [
+            (By.CSS_SELECTOR, 'button[data-test="header-menu__user"]'),
             (By.CSS_SELECTOR, '[data-test="header-user-menu"]'),
-            (By.CSS_SELECTOR, 'button[aria-label*="User"], button[aria-label*="Cuenta"]'),
+            (By.CSS_SELECTOR, 'button[aria-label*="User" i]'),
+            (By.CSS_SELECTOR, 'button[aria-label*="Cuenta" i]'),
             (By.CSS_SELECTOR, 'img[alt*="avatar" i]'),
         ]
         has_avatar = any(driver.find_elements(by, sel) for by, sel in avatar_candidates)
@@ -182,42 +198,36 @@ def _is_logged_out(driver: WebDriver) -> bool:
     except Exception:
         return False
 
-def _click_first(driver: WebDriver, wait: WebDriverWait, targets: list[tuple[str, str]], label: str, timeout: int = LOGOUT_TIMEOUT) -> bool:
-    """
-    Espera y hace click en el primer selector que aparezca.
-    """
+
+def _click(driver: WebDriver, wait: WebDriverWait, locator: tuple, label: str, timeout: int = 8) -> bool:
+    """Click robusto con fallback a JS click y pequeño scroll."""
     end = time.time() + timeout
     last_err = None
     while time.time() < end:
-        for by, sel in targets:
+        try:
+            el = WebDriverWait(driver, 3).until(EC.element_to_be_clickable(locator))
             try:
-                el = WebDriverWait(driver, 5).until(EC.element_to_be_clickable((by, sel)))
-                try:
-                    el.click()
-                except Exception:
-                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-                    _sleep(0.1)
-                    driver.execute_script("arguments[0].click();", el)
-                return True
-            except Exception as e:
-                last_err = e
-        _sleep(0.3)
+                el.click()
+            except Exception:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+                _sleep(0.1)
+                driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception as e:
+            last_err = e
+            _sleep(0.25)
     if last_err:
         print(f"      -> ⚠️ No se pudo hacer click en {label}: {last_err}")
     return False
 
+
 def _perform_logout(driver: WebDriver, wait: WebDriverWait) -> bool:
     """
-    Cierra sesión en Semrush de forma robusta.
-    Estrategia:
-      1) Si ya está deslogueado, retornar True (idempotente).
-      2) Intentar abrir el menú de usuario (avatar).
-      3) Clic en 'Cerrar sesión' / 'Sign out' / 'Log out'.
-      4) Confirmar estado de deslogueo.
-      Fallbacks:
-      A) Ir a la home y reintentar.
-      B) Intentar endpoints /logout conocidos.
-      C) Limpiar cookies de sesión como último recurso.
+    Cierra sesión en Semrush de forma robusta y en el orden indicado:
+      1) Click en botón de usuario (PRIORIDAD: selector exacto entregado por el usuario).
+      2) Click en enlace de logout (PRIORIDAD: selector exacto entregado por el usuario).
+      3) Confirmar estado de logout.
+    Fallbacks: reintentar desde home, endpoints /logout y limpieza de cookies.
     """
     try:
         # 1) Idempotencia
@@ -225,49 +235,63 @@ def _perform_logout(driver: WebDriver, wait: WebDriverWait) -> bool:
             print("   -> 🔓 Ya estás deslogueado (detectado).")
             return True
 
-        # En caso de estar en una vista donde no aparece el header, ir a home.
-        try:
-            driver.get("https://es.semrush.com/")
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
-        except Exception:
-            pass
+        # Asegurar header visible
+        _open_home(driver)
 
-        # 2) Abrir menú de usuario (avatar)
-        avatar_selectors = [
-            (By.CSS_SELECTOR, '[data-test="header-user-menu"]'),
-            (By.CSS_SELECTOR, 'button[aria-label*="User" i]'),
-            (By.CSS_SELECTOR, 'button[aria-label*="Cuenta" i]'),
-            (By.CSS_SELECTOR, 'img[alt*="avatar" i]'),
-            (By.XPATH, "//button[contains(@aria-label,'Profile') or contains(@aria-label,'Cuenta')]"),
-        ]
-        if not _click_first(driver, wait, avatar_selectors, "menú de usuario", timeout=12):
-            # Intento alterno: a veces el menú se abre con foco/ENTER
-            try:
-                menu = driver.find_element(By.CSS_SELECTOR, '[data-test="header-user-menu"]')
-                menu.send_keys("\n")
-            except Exception:
-                pass
+        # 2) Abrir menú de usuario (avatar) — PRIORIDAD selector exacto
+        user_menu_primary = (
+            By.CSS_SELECTOR,
+            'button.srf-header__menu-link.srf-header__has-submenu-link.srf-header__menu-link--user[data-test="header-menu__user"]',
+        )
+        if not _click(driver, wait, user_menu_primary, "menú de usuario (principal)", timeout=10):
+            # Alternos razonables por si cambian clases/atributos
+            alternates = [
+                (By.CSS_SELECTOR, 'button[data-test="header-menu__user"]'),
+                (By.CSS_SELECTOR, '[data-test="header-user-menu"]'),
+                (By.CSS_SELECTOR, 'button[aria-haspopup="true"][aria-label*="perfil" i]'),
+            ]
+            opened = False
+            for alt in alternates:
+                if _click(driver, wait, alt, "menú de usuario (alterno)", timeout=6):
+                    opened = True
+                    break
+            if not opened:
+                print("   -> ⚠️ No se pudo abrir el menú de usuario.")
+                try:
+                    btn = driver.find_element(*user_menu_primary)
+                    btn.send_keys("\n")
+                except Exception:
+                    pass
 
         _sleep(0.4)
 
-        # 3) Click en opción de logout (múltiples variantes)
-        logout_selectors = [
-            (By.XPATH, "//a[contains(., 'Cerrar sesión') or contains(., 'Sign out') or contains(., 'Log out')]"),
-            (By.CSS_SELECTOR, '[data-test="header-sign-out"], a[data-test="header-sign-out"]'),
-            (By.XPATH, "//button[contains(., 'Cerrar sesión') or contains(., 'Sign out') or contains(., 'Log out')]"),
-        ]
-        if not _click_first(driver, wait, logout_selectors, "opción de Cerrar sesión", timeout=12):
-            # Fallback A: recargar home y reintentar una vez
-            try:
-                driver.get("https://es.semrush.com/")
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
+        # 3) Click en "Cerrar sesión" — PRIORIDAD selector exacto
+        logout_primary = (
+            By.CSS_SELECTOR,
+            'a.srf-header__submenu-link[data-test="header-menu__user-logout"][href="/sso/logout"]',
+        )
+        if not _click(driver, wait, logout_primary, "Cerrar sesión (principal)", timeout=10):
+            logout_alternates = [
+                (By.CSS_SELECTOR, 'a[data-test="header-menu__user-logout"]'),
+                (By.XPATH, "//a[contains(@href,'/sso/logout')]"),
+                (By.XPATH, "//a[contains(., 'Cerrar sesión') or contains(., 'Sign out') or contains(., 'Log out')]"),
+                (By.CSS_SELECTOR, '[data-test="header-sign-out"], a[data-test="header-sign-out"]'),
+            ]
+            clicked = False
+            for alt in logout_alternates:
+                if _click(driver, wait, alt, "Cerrar sesión (alterno)", timeout=6):
+                    clicked = True
+                    break
+            if not clicked:
+                # Fallback: volver a home y reintentar una vez
+                print("   -> ⚠️ Reintentando logout desde home…")
+                _open_home(driver)
                 _sleep(0.5)
-                if not _click_first(driver, wait, avatar_selectors, "menú de usuario (reintento)", timeout=8):
-                    raise TimeoutException("No se pudo abrir el menú de usuario en el reintento.")
-                if not _click_first(driver, wait, logout_selectors, "opción de Cerrar sesión (reintento)", timeout=8):
-                    raise TimeoutException("No se pudo clicar 'Cerrar sesión' en el reintento.")
-            except Exception as e:
-                print(f"   -> ⚠️ Fallback A (reintento desde home) falló: {e}")
+                if _click(driver, wait, user_menu_primary, "menú de usuario (reintento)", timeout=6):
+                    if not _click(driver, wait, logout_primary, "Cerrar sesión (reintento)", timeout=6):
+                        for alt in logout_alternates:
+                            if _click(driver, wait, alt, "Cerrar sesión (reintento alterno)", timeout=5):
+                                break
 
         _sleep(1.0)
 
@@ -276,14 +300,15 @@ def _perform_logout(driver: WebDriver, wait: WebDriverWait) -> bool:
             print("   -> ✅ Logout exitoso.")
             return True
 
-        # Fallback B: endpoints conocidos
-        try_endpoints = [
+        # Endpoints directos
+        for url in [
+            "https://es.semrush.com/sso/logout",
+            "https://www.semrush.com/sso/logout",
             "https://es.semrush.com/logout",
             "https://www.semrush.com/logout",
             "https://es.semrush.com/auth/logout",
             "https://www.semrush.com/auth/logout",
-        ]
-        for url in try_endpoints:
+        ]:
             try:
                 driver.get(url)
                 WebDriverWait(driver, 6).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
@@ -294,11 +319,10 @@ def _perform_logout(driver: WebDriver, wait: WebDriverWait) -> bool:
             except Exception:
                 pass
 
-        # Fallback C: limpiar cookies de sesión como último recurso
+        # Limpieza de cookies como último recurso
         try:
             driver.delete_all_cookies()
-            driver.get("https://es.semrush.com/")
-            WebDriverWait(driver, 6).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
+            _open_home(driver)
             if _is_logged_out(driver):
                 print("   -> ✅ Logout por limpieza de cookies.")
                 return True
@@ -310,7 +334,7 @@ def _perform_logout(driver: WebDriver, wait: WebDriverWait) -> bool:
 
     except Exception as e:
         print(f"   -> 🚨 Error en _perform_logout: {e}")
-        return False    
+        return False
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -412,8 +436,21 @@ def run_semrush_login_flow(credential_id: int):
         print(f"\n🚨 ERROR FATAL durante el flujo de login de Semrush: {e}")
         traceback.print_exc()
     finally:
-        if browser_manager:
-            browser_manager.quit_driver()
+        try:
+            if driver:
+                # Logout FINAL como último paso antes de cerrar
+                print("🔐 Intentando logout FINAL (último paso) antes de cerrar el navegador…")
+                try:
+                    _open_home(driver)
+                except Exception:
+                    pass
+                try:
+                    _perform_logout(driver, WebDriverWait(driver, 20))
+                except Exception as e:
+                    print(f"⚠️ Error intentando logout final: {e}")
+        finally:
+            if browser_manager:
+                browser_manager.quit_driver()
         print("\n" + "="*60)
         print("✅ SERVICIO FINALIZADO: Flujo de login de Semrush.")
         print("="*60 + "\n")
@@ -513,7 +550,6 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
         if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Empieza ahora"]]'), "botón Empieza ahora"):
             _best_effort_logout(driver, wait); return
 
-        # Pausa para la siguiente sección
         _sleep(15)
 
         # Paso 3b: Bloque de 'Supervisa el posicionamiento de la palabra clave.'
@@ -525,8 +561,11 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
 
         # Paso 3c: Botón "Configurar" dentro de ese bloque
         print("\n   -> 🛠️  Buscando el botón 'Configurar' dentro del bloque...")
-        if not _wait_and_click(wait, driver, (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'),
-                               "botón Configurar (position_tracking)"):
+        if not _wait_and_click(
+            wait, driver,
+            (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'),
+            "botón Configurar (position_tracking)"
+        ):
             _best_effort_logout(driver, wait); return
         _sleep(10)  # Espera para que cargue el formulario de configuración
 
@@ -554,7 +593,7 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
         except Exception as e:
             print(f"      -> ⚠️ No se pudo completar la ubicación: {e}")
             _best_effort_logout(driver, wait); return
-        _sleep(5)  # según requerimiento
+        _sleep(5)
 
         # Paso 3e: Rellenar el nombre del negocio usando el name de la campaña
         print("\n   -> 🏷️  Rellenando el nombre del negocio desde public.campaigns.name...")
@@ -669,8 +708,21 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
         traceback.print_exc()
         print("   -> ❌ Como el proceso falló, NO se ha realizado ninguna modificación en la base de datos.")
     finally:
-        if browser_manager:
-            browser_manager.quit_driver()
+        try:
+            if driver:
+                # Logout FINAL como último paso antes de cerrar
+                print("🔐 Intentando logout FINAL (último paso) antes de cerrar el navegador…")
+                try:
+                    _open_home(driver)
+                except Exception:
+                    pass
+                try:
+                    _perform_logout(driver, WebDriverWait(driver, 20))
+                except Exception as e:
+                    print(f"⚠️ Error intentando logout final: {e}")
+        finally:
+            if browser_manager:
+                browser_manager.quit_driver()
         print("\n" + "="*60)
         print("✅ SERVICIO FINALIZADO: Flujo de configuración de cuenta Semrush.")
         print("="*60 + "\n")

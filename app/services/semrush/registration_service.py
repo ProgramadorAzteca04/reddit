@@ -374,20 +374,18 @@ def run_semrush_signup_flow():
 
     except Exception as e:
         print(f"\n🚨 ERROR FATAL durante el flujo de Semrush: {e}")
-        import traceback as _tb; _tb.print_exc()
+        traceback.print_exc()
     finally:
         try:
             if driver:
                 print("🔐 Intentando logout FINAL (último paso) antes de cerrar el navegador…")
                 try:
-                    # Asegura home para exponer header
                     driver.get("https://es.semrush.com/")
                     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
                 except Exception:
                     pass
-                # Llamada directa al logout robusto
+                # Llamada al logout robusto (usa primero tus dos selectores exactos)
                 _perform_logout(driver, WebDriverWait(driver, 20))
-                did_try_final_logout = True
         except Exception as e:
             print(f"⚠️ Error intentando logout final: {e}")
         finally:
@@ -396,7 +394,6 @@ def run_semrush_signup_flow():
         print("\n" + "="*60)
         print("✅ SERVICIO FINALIZADO: Flujo de Semrush.")
         print("="*60 + "\n")
-
 
 # ─────────────────────────────────────────────────────────────
 # Batch: ejecutar N veces el flujo de registro (secuencial)
