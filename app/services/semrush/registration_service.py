@@ -17,11 +17,13 @@ from app.models.semrush_models import CredentialSemrush
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from app.db.database import get_db
-from sqlalchemy import text as sql_text  # para SET client_encoding si aplica
+from sqlalchemy import text as sql_text  # opcional: SET client_encoding si aplica
 import traceback
 import time
 import os
 import unicodedata
+import json
+from datetime import datetime
 
 # ✅ NUEVO: importar el helper único de CAPTCHA desde el servicio dedicado
 from app.services.captcha_service import solve_recaptcha_in_iframes
@@ -186,38 +188,8 @@ def _handle_survey_step(driver: WebDriver, wait: WebDriverWait, survey_step: int
 
 
 # ─────────────────────────────────────────────────────────────
-# UTF-8 Sanitizer y logging seguro
+# Logging/errores legibles (sin romper por encoding raro)
 # ─────────────────────────────────────────────────────────────
-
-def _ensure_str_utf8(v):
-    """Devuelve str seguro en UTF-8 desde str/bytes/otros. Conserva info al máximo."""
-    if v is None:
-        return None
-    if isinstance(v, bytes):
-        for enc in ("utf-8", "cp1252", "latin-1"):
-            try:
-                s = v.decode(enc)
-                return unicodedata.normalize("NFC", s)
-            except Exception:
-                pass
-        return v.decode("utf-8", errors="replace")
-    if isinstance(v, str):
-        return unicodedata.normalize("NFC", v)
-    return unicodedata.normalize("NFC", str(v))
-
-
-def _sanitize_field(v, maxlen=None):
-    """Normaliza, recorta espacios y limpia controles invisibles."""
-    s = _ensure_str_utf8(v)
-    if s is None:
-        return None
-    s = s.replace("\uFEFF", "").strip()
-    # elimina separadores invisibles comunes
-    s = s.replace("\u200B", "").replace("\u2060", "")
-    if maxlen is not None and len(s) > maxlen:
-        s = s[:maxlen]
-    return s
-
 
 def _safe_exc_to_text(exc) -> str:
     """Convierte Exception a texto sin reventar por bytes no-UTF8."""
@@ -225,15 +197,41 @@ def _safe_exc_to_text(exc) -> str:
         return str(exc)
     except Exception:
         try:
-            # intenta con el primer arg
             if exc.args:
                 msg = exc.args[0]
                 if isinstance(msg, bytes):
                     return msg.decode("utf-8", errors="replace")
-                return _ensure_str_utf8(msg)
+                return str(msg)
         except Exception:
             pass
         return f"{exc.__class__.__name__}: <mensaje no decodificable>"
+
+
+# ─────────────────────────────────────────────────────────────
+# NUEVO: guardado en TXT (JSON Lines, extensible)
+# ─────────────────────────────────────────────────────────────
+
+def _append_credentials_txt(record: dict, path: str = None, status: str = "ok") -> None:
+    """
+    Escribe una línea JSON con las credenciales crudas + metadatos.
+    Formato JSONL permite agregar nuevos campos sin tocar encabezados.
+    """
+    try:
+        if path is None:
+            path = os.path.join("storage", "semrush_credentials.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        entry = {
+            "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "status": status,
+            **record,
+        }
+        # ensure_ascii=False para conservar caracteres tal cual
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        print(f"      -> 📝 Credenciales añadidas a TXT: {path}")
+    except Exception as e:
+        print(f"      -> ⚠️ No se pudo escribir en TXT: {_safe_exc_to_text(e)}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -402,47 +400,46 @@ def run_semrush_signup_flow():
         else:
             print("      -> No se encontró la pantalla de marketing source (paso opcional).")
 
-        # Guardar en BD (con saneo de codificación)
+        # ─────────────────────────────────────────────────────
+        # Guardar en BD (datos crudos) + TXT
+        # ─────────────────────────────────────────────────────
         print("\n   -> 💾 Intentando guardar la nueva cuenta en la base de datos...")
         db = next(get_db())
+        raw_record = {
+            "email": email_to_use,                                   # sin convertir
+            "password": password_to_use,                             # sin convertir
+            "proxy": (proxy_info.get("host") or ""),                 # sin convertir
+            "port": str(proxy_info.get("port") or ""),               # sin convertir
+            "note": "Registrado automáticamente",                    # sin convertir
+            # Puedes agregar fácilmente nuevos campos aquí:
+            # "plan": plan_detectado,
+            # "ua": user_agent,
+        }
+
+        # Imprimir exactamente lo que se enviará a la BD
+        print("      -> 📤 Payload a BD (RAW):", raw_record)
+
+        db_status = "ok"
         try:
-            # Asegura client_encoding UTF8 si el driver/servidor lo permite
+            # Opcional para asegurar UTF8 en el canal cliente (no altera tus strings)
             try:
                 db.execute(sql_text("SET client_encoding TO 'UTF8'"))
             except Exception:
-                pass  # si no aplica (ya está en UTF8), no romper
-
-            email_safe    = _sanitize_field(email_to_use,   maxlen=255)
-            password_safe = _sanitize_field(password_to_use, maxlen=255)
-            proxy_safe    = _sanitize_field((proxy_info.get("host") or ""), maxlen=255)
-            port_safe     = _sanitize_field(str(proxy_info.get("port") or ""), maxlen=10)
-            note_safe     = _sanitize_field("Registrado automáticamente", maxlen=255)
+                pass
 
             new_credential = CredentialSemrush(
-                email=email_safe,
-                password=password_safe,
-                proxy=proxy_safe,
-                port=port_safe,
-                note=note_safe
+                email=raw_record["email"],
+                password=raw_record["password"],
+                proxy=raw_record["proxy"],
+                port=raw_record["port"],
+                note=raw_record["note"],
             )
             db.add(new_credential)
             db.commit()
             print("      -> ✅ ¡Cuenta guardada exitosamente en la base de datos!")
-
-            # Logout best-effort
-            try:
-                print("   -> Intentando exponer el header antes de logout (si fuera necesario)...")
-                driver.get("https://es.semrush.com/")
-                WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
-            except Exception:
-                pass
-            print("   -> Cerrando sesión…")
-            _best_effort_logout(driver, WebDriverWait(driver, 20))
-
         except Exception as db_error:
-            # ⚠️ Log seguro: no dejes que el propio print reviente por bytes raros
-            msg = _safe_exc_to_text(db_error)
-            print(f"      -> 🚨 ERROR al guardar en la base de datos: {msg}")
+            db_status = "db_error"
+            print(f"      -> 🚨 ERROR al guardar en la base de datos: {_safe_exc_to_text(db_error)}")
             try:
                 db.rollback()
             except Exception:
@@ -452,6 +449,19 @@ def run_semrush_signup_flow():
                 db.close()
             except Exception:
                 pass
+
+        # Guardar/actualizar TXT SIEMPRE (aunque falle la BD, para no perder credenciales)
+        _append_credentials_txt(raw_record, status=db_status)
+
+        # Logout best-effort
+        try:
+            print("   -> Intentando exponer el header antes de logout (si fuera necesario)...")
+            driver.get("https://es.semrush.com/")
+            WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
+        except Exception:
+            pass
+        print("   -> Cerrando sesión…")
+        _best_effort_logout(driver, WebDriverWait(driver, 20))
 
         print("\n   -> Registro completado. La ventana permanecerá abierta por 20 segundos.")
         _sleep(20)
@@ -471,7 +481,6 @@ def run_semrush_signup_flow():
                     WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'body')))
                 except Exception:
                     pass
-                # Llamada al logout robusto (usa primero tus dos selectores exactos)
                 _perform_logout(driver, WebDriverWait(driver, 20))
         except Exception as e:
             print(f"⚠️ Error intentando logout final: {_safe_exc_to_text(e)}")
