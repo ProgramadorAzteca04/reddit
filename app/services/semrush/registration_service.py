@@ -518,7 +518,7 @@ def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> No
     except Exception:
         delay_seconds = 10.0
 
-    MAX_TIMES = 50  # límite de seguridad
+    MAX_TIMES = 500  # límite de seguridad
     if times > MAX_TIMES:
         print(f"⚠️  times={times} supera el máximo permitido ({MAX_TIMES}); se ajusta a {MAX_TIMES}.")
         times = MAX_TIMES
