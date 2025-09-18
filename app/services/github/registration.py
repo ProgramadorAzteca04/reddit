@@ -1,14 +1,14 @@
 from app.services.openai.content_generator_service import generate_human_username
-from app.services.reddit.desktop_service import HumanInteractionUtils
-from app.services.reddit.browser_service import BrowserManagerProxy
+from app.services.reddit.desktop_service import HumanInteractionUtils, PyAutoGuiService, DesktopUtils
+from app.services.reddit.browser_service import BrowserManager  # ⬅️ Opción A
 from app.services.reddit.proxy_service import ProxyManager
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+from urllib.parse import urlparse, parse_qs
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, NoSuchFrameException, StaleElementReferenceException
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
-from app.services.reddit.desktop_service import PyAutoGuiService
 from app.db.database import get_db_secondary
 from app.models.git import Credential
 from datetime import datetime
@@ -79,6 +79,153 @@ def _human_type_into(wait, driver, locator, text: str, label: str,
     except Exception as e:
         print(f"      -> ⏱️ Timeout/err tipeando en '{label}': {e}")
         return False
+
+
+# =========================
+# Arkose/Octocaptcha helpers (pk, session, token y extracción URL)
+# =========================
+def _parse_query_and_fragment(u: str) -> dict:
+    """Devuelve dict con params de query y fragment (#...)."""
+    out = {}
+    try:
+        pr = urlparse(u)
+        q = parse_qs(pr.query)
+        for k, v in q.items():
+            if v:
+                out[k] = v[0]
+        if pr.fragment:
+            frag = pr.fragment
+            if "=" in frag:
+                fq = parse_qs(frag)
+                for k, v in fq.items():
+                    if v:
+                        out[k] = v[0]
+            else:
+                out["_fragment_raw"] = frag
+    except Exception:
+        pass
+    return out
+
+def _collect_arkose_iframe_params(driver) -> dict:
+    """
+    Busca iframes de Arkose/Octocaptcha y extrae parámetros como pk y session del src.
+    No cambia de frame: solo lee los src.
+    """
+    data = {"pk": None, "session": None, "sources": []}
+    sel = (
+        "iframe.js-octocaptcha-frame,"
+        "iframe[src*='octocaptcha.com'],"
+        "iframe[src*='github-api.arkoselabs.com']"
+    )
+    frames = driver.find_elements(By.CSS_SELECTOR, sel)
+    for fr in frames:
+        try:
+            src = fr.get_attribute("src") or ""
+            if not src:
+                continue
+            params = _parse_query_and_fragment(src)
+            data["sources"].append({"src": src, "params": params})
+            if not data["pk"]:
+                data["pk"] = params.get("pk")
+            if not data["session"]:
+                data["session"] = params.get("session")
+        except Exception:
+            continue
+    return data
+
+def _wait_for_arkose_token_input(wait: WebDriverWait, driver, timeout: int = 30) -> str | None:
+    """
+    Espera a que el DOM de GitHub inserte el input hidden con el token final.
+    Esto ocurre cuando el reto ya fue resuelto legítimamente.
+    """
+    selectors = [
+        "input[name='arkose_token']",
+        "input[name*='arkose']",
+        "input[name='octocaptcha-token']",
+        "input[name*='octocaptcha-token']",
+    ]
+    for sel in selectors:
+        try:
+            el = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+            )
+            val = (el.get_attribute("value") or "").strip()
+            if val:
+                return val
+        except TimeoutException:
+            continue
+    return None
+
+def get_arkose_context_after_reload(wait: WebDriverWait, driver, success_timeout: int = 180, token_timeout: int = 30) -> dict:
+    """
+    Llamar DESPUÉS de hacer click en 'Reload' (o tras resolver el puzzle).
+    1) Lee pk y session de los iframes.
+    2) (Opcional) Espera a SUCCESS (si ya esperaste antes, no es necesario).
+    3) Busca el input hidden con el token final en el DOM principal.
+    """
+    context = {
+        "pk": None,
+        "session": None,
+        "token": None,
+        "sources": []
+    }
+
+    info = _collect_arkose_iframe_params(driver)
+    context.update({k: info.get(k) for k in ("pk", "session")})
+    context["sources"] = info.get("sources", [])
+
+    try:
+        driver.switch_to.default_content()
+    except NoSuchFrameException:
+        pass
+
+    token = _wait_for_arkose_token_input(wait, driver, timeout=token_timeout)
+    context["token"] = token
+
+    return context
+
+def extract_octocaptcha_url(driver, wait, max_tries=3) -> str:
+    """
+    Extrae la URL del iframe de OctoCaptcha (clase .js-octocaptcha-frame).
+    - Prioriza 'src' y cae a 'data-src' si es lazy.
+    - Incluye reintentos suaves por reinyección (stale) tras Reload.
+    """
+    print("   -> ⏳ Buscando iframe de OctoCaptcha (.js-octocaptcha-frame)…")
+    selectors = [
+        (By.CSS_SELECTOR, "iframe.js-octocaptcha-frame"),
+        (By.XPATH, "//iframe[contains(@src,'octocaptcha.com') or contains(@data-src,'octocaptcha.com')]"),
+    ]
+
+    def _get_src_from(elem):
+        src = (elem.get_attribute("src") or "").strip()
+        if not src or src == "about:blank":
+            ds = (elem.get_attribute("data-src") or "").strip()
+            if ds:
+                src = ds
+        return src
+
+    for attempt in range(1, max_tries + 1):
+        for by, sel in selectors:
+            try:
+                frame = wait.until(EC.presence_of_element_located((by, sel)))
+                try:
+                    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", frame)
+                except Exception:
+                    pass
+                url = _get_src_from(frame)
+                if url:
+                    print(f"   -> ✅ OctoCaptcha iframe localizado. URL: {url[:160]}…")
+                    return url
+                else:
+                    print(f"   -> ⚠️ Iframe hallado con {sel} pero sin src/data-src. Reintentando…")
+            except (TimeoutException, StaleElementReferenceException):
+                continue
+            except Exception as e:
+                print(f"   -> ⚠️ Error buscando OctoCaptcha con {sel}: {e}")
+        time.sleep(1.5)
+
+    print("   -> ❌ No se pudo extraer URL de OctoCaptcha.")
+    return ""
 
 
 # =========================
@@ -393,16 +540,19 @@ def persist_credentials(email: str, username: str, password: str, proxy_info: di
 
 
 # =========================
-# Flujo principal
+# Flujo principal (Opción A aplicada)
 # =========================
 def run_github_sign_in_flow():
     print("\n" + "="*60)
     print("🚀 INICIANDO FLUJO: Registro en GitHub.")
     print("="*60)
 
-    CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-    URL = "https://gist.github.com/starred"
-    USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
+    # ── Config navegación con BrowserManager (misma lógica que tu otro servicio)
+    CHROME_PATH    = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    URL            = "https://gist.github.com/starred"
+    USER_DATA_DIR  = os.path.join(os.getcwd(), "chrome_dev_session")
+    DEBUGGING_PORT = "9223"
+    WINDOW_TITLE   = "GitHub"   # título de ventana a enfocar (best-effort)
 
     pyautogui_service = PyAutoGuiService()
 
@@ -413,20 +563,112 @@ def run_github_sign_in_flow():
     username_to_use = ""
     proxy_info = {}
 
+    # Helper Arkose (puede quedarse igual si lo usas como fallback)
+    def open_arkose_game_core_in_new_tab(driver, wait) -> bool:
+        """
+        [root] -> <iframe title='Verification challenge' data-e2e='enforcement-frame'>  # OUTER
+                    -> <iframe id='game-core-frame' title='Visual challenge' ...>      # INNER
+        """
+        print("   -> ⏳ Buscando iframe externo de Arkose (enforcement-frame)…")
+        outer_candidates = [
+            (By.CSS_SELECTOR, "iframe[data-e2e='enforcement-frame']"),
+            (By.CSS_SELECTOR, "iframe[title='Verification challenge']"),
+            (By.XPATH, "//iframe[contains(@src,'arkoselabs.com') and contains(@src,'enforcement')]"),
+        ]
+
+        def _find_outer_iframe():
+            last_err = None
+            for by, sel in outer_candidates:
+                try:
+                    return wait.until(EC.presence_of_element_located((by, sel)))
+                except Exception as e:
+                    last_err = e
+                    continue
+            if last_err:
+                raise last_err
+            return None
+
+        def _find_inner_and_get_src():
+            inner_candidates = [
+                (By.CSS_SELECTOR, "iframe#game-core-frame"),
+                (By.CSS_SELECTOR, "iframe[title='Visual challenge']"),
+                (By.CSS_SELECTOR, "iframe.game-core-frame"),
+            ]
+            for by, sel in inner_candidates:
+                try:
+                    inner = wait.until(EC.presence_of_element_located((by, sel)))
+                    src = inner.get_attribute("src")
+                    if src:
+                        return src
+                except TimeoutException:
+                    continue
+            return None
+
+        try:
+            outer = _find_outer_iframe()
+            driver.switch_to.frame(outer)
+        except StaleElementReferenceException:
+            print("   -> 🔁 OUTER stale. Reintentando localizar enforcement-frame…")
+            outer = _find_outer_iframe()
+            driver.switch_to.frame(outer)
+        except Exception as e:
+            print(f"   -> ❌ No se encontró iframe externo de Arkose: {e}")
+            return False
+
+        src_url = None
+        try:
+            src_url = _find_inner_and_get_src()
+        except StaleElementReferenceException:
+            print("   -> 🔁 INNER stale. Reintentando localizar game-core-frame…")
+            src_url = _find_inner_and_get_src()
+        except Exception as e:
+            print(f"   -> ⚠️ Error buscando iframe interno: {e}")
+
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+
+        if not src_url:
+            print("   -> ❌ No se pudo obtener el src del game-core-frame.")
+            return False
+
+        try:
+            print(f"   -> ✅ game-core-frame localizado. URL: {src_url[:150]}…")
+            driver.execute_script("window.open(arguments[0], '_blank');", src_url)
+            driver.switch_to.window(driver.window_handles[-1])
+            print("   -> 🚀 Arkose Game Core abierto en nueva pestaña y con foco.")
+            return True
+        except Exception as e:
+            print(f"   -> ❌ No se pudo abrir el game-core en nueva pestaña: {e}")
+            return False
+
     try:
+        # Proxy / UA
         proxy_manager = ProxyManager()
         proxy = proxy_manager.get_random_proxy()
         user_agent = proxy_manager.get_random_user_agent()
         if proxy:
             proxy_info = {"host": proxy.get("host"), "port": proxy.get("port")}
 
-        browser_manager = BrowserManagerProxy(
-            chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="",
+        # ⬇️ Opción A: MISMA lógica de tu otro servicio
+        browser_manager = BrowserManager(
+            CHROME_PATH, USER_DATA_DIR, DEBUGGING_PORT,
             proxy=proxy, user_agent=user_agent
         )
-        driver = browser_manager.get_configured_driver(URL)
+
+        # Abre Chrome con puerto de depuración y navega a la URL
+        browser_manager.open_chrome_with_debugging(URL)
+        time.sleep(15)  # deja tiempo a que Chrome levante y cargue
+
+        # Enfoca la ventana (best-effort; no fallar si no se puede)
+        if not DesktopUtils.get_and_focus_window(WINDOW_TITLE):
+            print("⚠️ No se pudo enfocar la ventana del navegador. Continuando…")
+
+        # Conecta Selenium al Chrome ya abierto
+        driver = browser_manager.connect_to_browser()
         if not driver:
-            print("   -> ❌ No se pudo iniciar el driver de Selenium-Wire.")
+            print("   -> ❌ No se pudo conectar Selenium al navegador.")
             return False
 
         print("\n   -> Esperando 20 segundos para que la página cargue...")
@@ -434,80 +676,81 @@ def run_github_sign_in_flow():
 
         wait = WebDriverWait(driver, DEFAULT_STEP_TIMEOUT)
 
-        # 0) Click en "Sign up" antes de llenar el correo (versión robusta)
-        print("   -> ⏳ Buscando enlace 'Sign up'…")
-
-        # a) localizar por atributos estables (evita depender del texto con &nbsp;)
-        sign_locators = [
+        # 0) Ir a "Sign up" (robusto desktop/móvil)
+        print("   -> ⏳ Intentando ir a 'Sign up'…")
+        sign_locators_visible = [
             (By.CSS_SELECTOR, "a.Header-link[href*='/join'][data-ga-click*='sign up']"),
-            (By.CSS_SELECTOR, "a.Header-link[data-ga-click*='sign up']"),
-            (By.XPATH, "//a[contains(@data-ga-click, 'sign up')]"),
-            (By.XPATH, "//a[contains(@href, '/join') and contains(@class,'Header-link')]"),
+            (By.XPATH, "//a[contains(@data-ga-click, 'sign up') and not(contains(@class,'d-md-none'))]"),
         ]
-
         sign_el = None
-        for by, sel in sign_locators:
+        for by, sel in sign_locators_visible:
             try:
-                # presencia primero (evita fallar si aún no es clickeable)
-                candidate = WebDriverWait(driver, 8).until(EC.presence_of_element_located((by, sel)))
-                if candidate and candidate.is_displayed():
+                candidate = WebDriverWait(driver, 5).until(EC.presence_of_element_located((by, sel)))
+                if candidate.is_displayed():
                     sign_el = candidate
                     break
             except Exception:
-                continue
+                pass
 
+        join_href = None
         if not sign_el:
-            print("❌ No se encontró el enlace 'Sign up' por selectores robustos.")
-            return False
+            try:
+                hidden_any = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//a[contains(@href,'/join') and contains(@href,'return_to=')]")
+                    )
+                )
+                join_href = hidden_any.get_attribute("href")
+            except Exception:
+                join_href = None
 
-        # b) asegurar que no haya overlays cubriendo el header y centrar el elemento
-        try:
-            driver.execute_script("window.scrollTo(0, 0)")
-        except Exception:
-            pass
-        _human_pause(0.2, 0.4)
-        try:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", sign_el)
-        except Exception:
-            pass
-        _human_pause(0.2, 0.4)
-
-        # c) intento #1: click "humano" con ActionChains
-        clicked = False
-        try:
-            ActionChains(driver).move_to_element(sign_el).pause(random.uniform(0.08, 0.2)).click(sign_el).perform()
-            clicked = True
-            print("   -> ✅ Click humano en 'Sign up'.")
-        except Exception as e:
-            print(f"   -> ⚠️ Click humano interceptado: {e}")
-
-        # d) alternativas si falló
-        if not clicked:
-            for try_fn in (
-                lambda: sign_el.send_keys(Keys.ENTER),
-                lambda: sign_el.send_keys(Keys.SPACE),
-                lambda: driver.execute_script("arguments[0].click();", sign_el),
-            ):
+        if sign_el:
+            clicked = False
+            try:
+                driver.execute_script("window.scrollTo(0, 0)")
+            except Exception:
+                pass
+            _human_pause(0.2, 0.4)
+            try:
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", sign_el)
+            except Exception:
+                pass
+            _human_pause(0.2, 0.4)
+            try:
+                ActionChains(driver).move_to_element(sign_el).pause(random.uniform(0.08, 0.2)).click(sign_el).perform()
+                clicked = True
+                print("   -> ✅ Click humano en 'Sign up'.")
+            except Exception as e:
+                print(f"   -> ⚠️ Click humano interceptado: {e}")
+            if not clicked:
+                for try_fn in (
+                    lambda: sign_el.send_keys(Keys.ENTER),
+                    lambda: sign_el.send_keys(Keys.SPACE),
+                    lambda: driver.execute_script("arguments[0].click();", sign_el),
+                ):
+                    try:
+                        try_fn()
+                        clicked = True
+                        print("   -> ✅ Alternativa de click aplicada en 'Sign up'.")
+                        break
+                    except Exception:
+                        pass
+            if not clicked:
                 try:
-                    try_fn()
-                    clicked = True
-                    print("   -> ✅ Alternativa de click aplicada en 'Sign up'.")
-                    break
+                    join_href = join_href or sign_el.get_attribute("href")
                 except Exception:
                     pass
 
-        # e) último recurso: navegar directo a la URL absoluta de join
-        if not clicked:
-            try:
-                href = sign_el.get_attribute("href") or "/join"
-                abs_url = driver.execute_script("return new URL(arguments[0], window.location.href).href;", href)
-                print(f"   -> 🔗 Navegando directo a: {abs_url}")
-                driver.get(abs_url)
-            except Exception as e:
-                print(f"   -> ❌ No se pudo navegar a join directamente: {e}")
-                return False
+        if join_href:
+            print(f"   -> 🔗 Navegando directo a: {join_href}")
+            driver.get(join_href)
+        elif not sign_el:
+            fallback = "https://gist.github.com/join?return_to=https%3A%2F%2Fgist.github.com%2Fstarred&source=header-gist"
+            print(f"   -> 🔗 Navegando por fallback a: {fallback}")
+            driver.get(fallback)
 
-        _human_pause(0.8, 1.6)  # pequeña pausa humana después del click
+        _human_pause(0.8, 1.6)
+        time.sleep(8)
 
         # 1) Email
         email_to_use = HumanInteractionUtils.get_random_email_from_file()
@@ -537,75 +780,80 @@ def run_github_sign_in_flow():
         if not validate_or_select_country_human(wait, driver, "United States of America"):
             return False
         _human_pause(0.8, 1.8)
-
         time.sleep(5)
 
-        # 5) Create account (PyAutoGUI con dos intentos)
+        # 5) Create account (PyAutoGUI 2 intentos)
         try:
             print("   -> ⏳ Buscando botón 'Create account' con PyAutoGUI (1er intento)…")
             if not pyautogui_service.find_and_click_humanly(["create_account_git.png"], attempts=3):
                 raise RuntimeError("No se encontró el botón 'Create account' en el primer intento.")
             print("   -> ✅ Click humano (PyAutoGUI) en 'Create account' (1er intento).")
-
-            # Espera antes de repetir
             time.sleep(5)
-
             print("   -> ⏳ Buscando botón 'Create account' con PyAutoGUI (2do intento)…")
             if not pyautogui_service.find_and_click_humanly(["create_account_git.png"], attempts=3):
                 print("⚠️ No se encontró el botón en el 2do intento. Continuando sin error…")
             else:
                 print("   -> ✅ Click humano (PyAutoGUI) en 'Create account' (2do intento).")
-
         except Exception as e:
             print(f"❌ Error al intentar hacer click en 'Create account': {e}")
             return False
 
-        # Verificación de transición tras el click
+        # Verificación de transición
         ok, reason = detect_signup_transition(wait, driver, timeout=30)
         if not ok:
             print(f"❌ No se detectó transición tras 'Create account' ({reason}). No se guardarán credenciales.")
             return False
 
-        # 6) Octocaptcha antes de guardar
+        # 6) Octocaptcha
         present, state = check_octocaptcha_presence(wait, driver, timeout=15)
         print(f"   -> ℹ️ Verificación detectada (estado: {state}).")
-
         if not present:
             print("❌ No se encontró UI de verificación (Octocaptcha). No se guardarán credenciales.")
             return False
 
-        # ⏳ NUEVO: si el captcha está 'pending' (solicitado), esperamos 60s antes de continuar
+        ark_ctx_reloaded = None
+
         if state == "pending":
             print("   -> ⏳ Captcha solicitado (estado: pending). Esperando 60 segundos antes de continuar…")
             _sleep(60)
 
-            # Revalidación tras la espera
             present_after, state_after = check_octocaptcha_presence(wait, driver, timeout=5)
             print(f"   -> 🔄 Revalidación tras 60s: present={present_after}, state={state_after}")
 
             if state_after == "pending":
-                # Intento manual con PyAutoGUI
+                # Intento manual con PyAutoGUI + Reload + abrir OctoCaptcha y/o Arkose en pestaña nueva
                 try:
                     if not pyautogui_service.find_and_click_humanly(["visual_puzzle.png"], attempts=2):
                         raise RuntimeError("No se encontró el campo de puzzle.")
                     print("   -> ✅ Puzzle visual detectado y clickeado.")
-                    # 👇 NUEVO: esperar 3 segundos y luego buscar botón de recarga
-                    time.sleep(3)
 
                     print("   -> ⏳ Buscando botón 'Reload Challenge' en el DOM…")
-                    try:
-                        if not _human_click(wait, driver, (By.XPATH, "//button[normalize-space()='Reload Challenge']"), "Reload Challenge"):
-                            print("⚠️ No se encontró o no fue clickeable el botón 'Reload Challenge'. Continuando…")
-                        else:
-                            print("   -> ✅ Click humano en 'Reload Challenge'.")
-                    except Exception as e:
-                        print(f"❌ Error al intentar clickear 'Reload Challenge': {e}")
-                    
+                    if not pyautogui_service.find_and_click_humanly(["reload.png"], attempts=2):
+                        raise RuntimeError("No se encontró el botón 'Reload Challenge'.")
+                    print("   -> ✅ 'Reload Challenge' clickeado.")
+
+                    # Deja que se reinyecten los iframes
+                    time.sleep(5)
+
+                    # PRIORIDAD: extraer URL del iframe de OctoCaptcha y abrir en pestaña nueva
+                    octo_url = extract_octocaptcha_url(driver, wait, max_tries=3)
+                    if octo_url:
+                        try:
+                            driver.execute_script("window.open(arguments[0], '_blank');", octo_url)
+                            driver.switch_to.window(driver.window_handles[-1])
+                            print("   -> 🚀 OctoCaptcha abierto en nueva pestaña y con foco.")
+                        except Exception as e:
+                            print(f"   -> ⚠️ No se pudo abrir OctoCaptcha en pestaña nueva: {e}")
+                    else:
+                        # Fallback: enforcement/frame → game-core de Arkose
+                        opened = open_arkose_game_core_in_new_tab(driver, wait)
+                        if not opened:
+                            print("   -> ⚠️ Ni OctoCaptcha ni Arkose game-core disponibles aún. Continuando…")
+
                 except Exception as e:
-                    print(f"❌ Error al intentar abrir el puzzle visual: {e}")
+                    print(f"❌ Error durante acción manual de Arkose/OctoCaptcha: {e}")
                     return False
 
-                # Luego del intento manual, espera a SUCCESS
                 print("   -> ⏳ Octocaptcha PENDING tras la acción manual: esperando SUCCESS…")
                 if not _wait_until_octocaptcha_success(wait, driver, max_seconds=180):
                     print("❌ La verificación Octocaptcha no se completó. No se guardarán credenciales.")
@@ -616,11 +864,32 @@ def run_github_sign_in_flow():
             else:
                 print("   -> ⚠️ Estado inesperado tras la espera. Continuando con precaución…")
 
-        # 7) Guardar credenciales SOLO si verificación OK
+        # 6.x) Extraer contexto Arkose/token tras SUCCESS
+        if ark_ctx_reloaded and ark_ctx_reloaded.get("token"):
+            ark_ctx = ark_ctx_reloaded
+        else:
+            ark_ctx = get_arkose_context_after_reload(wait, driver, success_timeout=180, token_timeout=30)
+
+        print(f"   -> ℹ️ Arkose pk: {ark_ctx.get('pk')}")
+        print(f"   -> ℹ️ Arkose session: {ark_ctx.get('session')}")
+        if ark_ctx.get("token"):
+            print("   -> ✅ Arkose/Octocaptcha token detectado en DOM.")
+        else:
+            print("   -> ⚠️ No se encontró token en DOM (el reto podría no estar completado).")
+
+        # 7) Guardar credenciales (si todo OK)
         print("   -> ✅ Verificación completada. Guardando credenciales…")
         if not persist_credentials(email_to_use, username_to_use, password_to_use, proxy_info):
             return False
 
+        print("✅ Flujo completado con éxito.")
+        return True
+
     except Exception as e:
         print(f"❌ Error durante el proceso de registro: {e}")
         return False
+
+    finally:
+        # ⬇️ Cierre consistente con BrowserManager (Opción A)
+        if browser_manager:
+            browser_manager.quit_driver()
