@@ -16,7 +16,15 @@ from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
+from typing import List, Optional, Set, Dict, Tuple
 from app.db.database import get_db
+from sqlalchemy import asc
+from app.api.v1.endpoints.drive_campaign import (
+    build_drive_client,
+    list_accessible_campaign_ids,
+    get_campaign_cities,
+    get_campaign_phrases_by_city,
+)
 
 import traceback
 import time
@@ -335,8 +343,35 @@ def _perform_logout(driver: WebDriver, wait: WebDriverWait) -> bool:
     except Exception as e:
         print(f"   -> 🚨 Error en _perform_logout: {e}")
         return False
-
-
+    
+def _persist_proxy_choice(credential_id: int, host: str, port: str) -> bool:
+    """
+    Actualiza en BD el proxy y el port de la credencial indicada.
+    Retorna True si se guardó correctamente.
+    """
+    db = next(get_db())
+    try:
+        cred = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
+        if not cred:
+            print(f"      -> ❌ No se encontró la credencial #{credential_id} para actualizar proxy.")
+            return False
+        cred.proxy = host or ""
+        cred.port = str(port or "")
+        db.commit()
+        print(f"      -> 💾 Proxy actualizado en BD para cred #{credential_id}: {host}:{port}")
+        return True
+    except Exception as e:
+        print(f"      -> 🚨 Error actualizando proxy en BD: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 # ───────────────────────────────────────────────────────────────────────────────
 # Flujo de LOGIN (misma lógica, endurecida)
 # ───────────────────────────────────────────────────────────────────────────────
@@ -366,28 +401,58 @@ def run_semrush_login_flow(credential_id: int):
     finally:
         db.close()
 
-    # 2. Configuración de navegador
+     # 2. Configuración de navegador
     CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
     URL = "https://es.semrush.com/login/"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
 
     browser_manager = None
     driver = None
-    
+
     try:
-        # Proxy
-        proxy_config = None
+        proxy_manager = ProxyManager()
+        proxy_config = None  # dict de proxy para BrowserManagerProxy
+
+        # --- Nueva lógica de elección y persistencia de proxy ---
         if proxy_host and proxy_port:
             print(f"   -> Buscando credenciales para el proxy {proxy_host}:{proxy_port} en 'proxies.txt'...")
-            proxy_manager = ProxyManager()
             proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
             if proxy_config:
                 print("      -> ✅ Credenciales del proxy encontradas.")
             else:
-                print(f"      -> ❌ Proxy {proxy_host}:{proxy_port} no existe en proxies.txt")
-                return
+                print(f"      -> ❌ Proxy {proxy_host}:{proxy_port} no existe en proxies.txt.")
+                print("      -> 🔄 Tomando un proxy aleatorio y actualizando la BD...")
+                random_proxy = proxy_manager.get_random_proxy()
+                if random_proxy:
+                    # Persistimos el nuevo proxy en BD
+                    _persist_proxy_choice(
+                        credential_id,
+                        random_proxy.get("host", ""),
+                        str(random_proxy.get("port", ""))
+                    )
+                    # Actualizamos variables locales para logs y coherencia
+                    proxy_host = random_proxy.get("host")
+                    proxy_port = str(random_proxy.get("port"))
+                    proxy_config = random_proxy
+                    print(f"      -> ✅ Proxy aleatorio asignado: {proxy_host}:{proxy_port}")
+                else:
+                    print("      -> ⚠️ No hay proxies disponibles en la lista. Se continuará SIN proxy.")
         else:
-            print("   -> ⚠️ No se utilizará proxy (no definido en la base de datos).")
+            print("   -> ⚠️ No hay proxy definido en la BD para esta credencial.")
+            print("      -> 🔄 Tomando un proxy aleatorio y actualizando la BD...")
+            random_proxy = proxy_manager.get_random_proxy()
+            if random_proxy:
+                _persist_proxy_choice(
+                    credential_id,
+                    random_proxy.get("host", ""),
+                    str(random_proxy.get("port", ""))
+                )
+                proxy_host = random_proxy.get("host")
+                proxy_port = str(random_proxy.get("port"))
+                proxy_config = random_proxy
+                print(f"      -> ✅ Proxy aleatorio asignado: {proxy_host}:{proxy_port}")
+            else:
+                print("      -> ⚠️ No hay proxies disponibles en la lista. Se continuará SIN proxy.")
 
         browser_manager = BrowserManagerProxy(
             chrome_path=CHROME_PATH, 
@@ -506,13 +571,49 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
     driver = None
     
     try:
+        proxy_manager = ProxyManager()
         proxy_config = None
+
+        # --- Nueva lógica de elección y persistencia de proxy (igual que en login) ---
         if proxy_host and proxy_port:
-            proxy_manager = ProxyManager()
+            print(f"   -> Buscando proxy {proxy_host}:{proxy_port} en 'proxies.txt'...")
             proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
-            if not proxy_config:
-                print(f"   -> ❌ El proxy {proxy_host}:{proxy_port} de la BD no existe en proxies.txt")
-                return
+            if proxy_config:
+                print("      -> ✅ Proxy válido encontrado.")
+            else:
+                print(f"      -> ❌ Proxy {proxy_host}:{proxy_port} no existe en 'proxies.txt'.")
+                print("      -> 🔄 Tomando un proxy aleatorio y actualizando la BD...")
+                random_proxy = proxy_manager.get_random_proxy()
+                if random_proxy:
+                    # Persistimos el nuevo proxy en BD para esta credencial
+                    _persist_proxy_choice(
+                        credential_to_use.id,
+                        random_proxy.get("host", ""),
+                        str(random_proxy.get("port", ""))
+                    )
+                    # Actualizamos variables locales y configuración del navegador
+                    proxy_host = random_proxy.get("host")
+                    proxy_port = str(random_proxy.get("port"))
+                    proxy_config = random_proxy
+                    print(f"      -> ✅ Proxy aleatorio asignado: {proxy_host}:{proxy_port}")
+                else:
+                    print("      -> ⚠️ No hay proxies disponibles. Se continuará SIN proxy.")
+        else:
+            print("   -> ⚠️ La credencial no tiene proxy/port en BD.")
+            print("      -> 🔄 Tomando un proxy aleatorio y actualizando la BD...")
+            random_proxy = proxy_manager.get_random_proxy()
+            if random_proxy:
+                _persist_proxy_choice(
+                    credential_to_use.id,
+                    random_proxy.get("host", ""),
+                    str(random_proxy.get("port", ""))
+                )
+                proxy_host = random_proxy.get("host")
+                proxy_port = str(random_proxy.get("port"))
+                proxy_config = random_proxy
+                print(f"      -> ✅ Proxy aleatorio asignado: {proxy_host}:{proxy_port}")
+            else:
+                print("      -> ⚠️ No hay proxies disponibles. Se continuará SIN proxy.")
         
         browser_manager = BrowserManagerProxy(
             chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="", proxy=proxy_config
@@ -726,3 +827,206 @@ def run_semrush_config_account_flow(id_campaign: int, city: str):
         print("\n" + "="*60)
         print("✅ SERVICIO FINALIZADO: Flujo de configuración de cuenta Semrush.")
         print("="*60 + "\n")
+
+
+def _get_free_credential_ids() -> Set[int]:
+    db = next(get_db())
+    try:
+        rows = db.query(CredentialSemrush.id).filter(CredentialSemrush.id_campaigns == None).all()
+        return {r[0] for r in rows}
+    finally:
+        db.close()
+
+def _pick_newly_assigned_credential_id(
+    campaign_id: int,
+    pre_free_ids: Set[int]
+) -> Optional[int]:
+    """
+    Identifica cuál credencial (de las que estaban libres antes) quedó asignada
+    a la campaña tras una iteración de configuración.
+    """
+    db = next(get_db())
+    try:
+        rows = (
+            db.query(CredentialSemrush.id)
+            .filter(
+                CredentialSemrush.id_campaigns == campaign_id,
+                CredentialSemrush.id.in_(pre_free_ids)
+            )
+            .all()
+        )
+        ids = [r[0] for r in rows]
+        if len(ids) == 1:
+            return ids[0]
+        return None
+    finally:
+        db.close()
+
+def _update_credential_note(credential_id: int, note_text: str) -> bool:
+    """
+    Actualiza el campo 'note' de la credencial indicada.
+    """
+    db = next(get_db())
+    try:
+        cred = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
+        if not cred:
+            print(f"   -> ❌ No se encontró la credencial #{credential_id} para actualizar note.")
+            return False
+        cred.note = note_text or ""
+        db.commit()
+        print(f"   -> 📝 note actualizado en BD para cred #{credential_id}: '{note_text}'")
+        return True
+    except Exception as e:
+        print(f"   -> 🚨 Error actualizando note en BD: {e}")
+        try: db.rollback()
+        except Exception: pass
+        return False
+    finally:
+        try: db.close()
+        except Exception: pass
+
+def _campaigns_in_db(campaign_ids: List[int]) -> List[int]:
+    """
+    Devuelve los campaign_ids (de la lista recibida) que existen en la tabla Campaign,
+    ordenados ascendentemente.
+    """
+    if not campaign_ids:
+        return []
+    db = next(get_db())
+    try:
+        rows = (
+            db.query(Campaign.id)
+            .filter(Campaign.id.in_(campaign_ids))
+            .order_by(asc(Campaign.id))
+            .all()
+        )
+        return [r[0] for r in rows]
+    finally:
+        db.close()
+
+def run_semrush_cycle_config_accounts(
+    delay_seconds: float = 8.0,
+    max_total_iterations: Optional[int] = None
+) -> None:
+    """
+    Ciclo maestro:
+    - Mientras haya credenciales libres (id_campaigns NULL),
+      recorre campañas accesibles en Drive (orden ascendente) y sus ciudades (ordenadas).
+    - Para cada (campaña, ciudad) con frases disponibles:
+        * Llama a run_semrush_config_account_flow(campaign_id, city)
+        * Detecta la credencial asignada y actualiza 'note' = ciudad usada.
+    - Se detiene cuando:
+        * No quedan credenciales libres, o
+        * Se agotan todas las combinaciones útiles (campaña con al menos una ciudad con frases).
+    - delay_seconds: espera entre iteraciones para estabilidad de UI.
+    - max_total_iterations: tope de seguridad (None = sin tope).
+    """
+    print("\n" + "="*72)
+    print("🧭 INICIANDO CICLO MAESTRO: configurar cuentas por campaña → ciudades")
+    print("="*72)
+
+    # 0) Estado inicial: hay credenciales libres?
+    free_ids = _get_free_credential_ids()
+    if not free_ids:
+        print("   -> ⚠️ No hay credenciales libres (id_campaigns NULL). Nada por hacer.")
+        print("="*72 + "\n")
+        return
+
+    # 1) Cliente Drive y campañas accesibles (por carpeta mapeada y permisos)
+    try:
+        drive = build_drive_client(credentials_json_path="credentials.json", token_json_path="token.json")
+    except Exception as e:
+        print(f"   -> 🚨 No se pudo crear cliente de Drive: {e}")
+        print("   -> ❌ Abortando ciclo maestro.")
+        print("="*72 + "\n")
+        return
+
+    try:
+        accessible = list_accessible_campaign_ids(drive)  # por mapa y acceso
+    except Exception as e:
+        print(f"   -> 🚨 No se pudieron listar campañas accesibles en Drive: {e}")
+        accessible = []
+
+    # Filtra a campañas que existen en tu tabla Campaign y ordena asc
+    campaign_queue = _campaigns_in_db(accessible)
+    if not campaign_queue:
+        print("   -> ⚠️ No hay campañas accesibles (Drive) que existan en BD. Nada por hacer.")
+        print("="*72 + "\n")
+        return
+
+    iter_count = 0
+
+    # 2) Bucle principal
+    for campaign_id in campaign_queue:
+        # Re-evaluar credenciales libres al inicio de cada campaña
+        free_ids = _get_free_credential_ids()
+        if not free_ids:
+            print("   -> ✅ No quedan credenciales libres. Ciclo maestro finalizado.")
+            break
+
+        # Ciudades de la campaña (ordenadas)
+        try:
+            cities = sorted(get_campaign_cities(drive, campaign_id) or [])
+        except Exception as e:
+            print(f"   -> ⚠️ No se pudieron obtener ciudades para campaña {campaign_id}: {e}")
+            continue
+
+        if not cities:
+            print(f"   -> ⚠️ Campaña {campaign_id} no tiene ciudades disponibles. Se omite.")
+            continue
+
+        print(f"\n— Campaña #{campaign_id}: {len(cities)} ciudades candidatas —")
+
+        for city in cities:
+            # Tope de seguridad
+            if max_total_iterations is not None and iter_count >= max_total_iterations:
+                print("   -> ⛔ Tope de iteraciones alcanzado. Salida segura.")
+                print("="*72 + "\n")
+                return
+
+            # ¿Aún hay credenciales libres?
+            free_ids = _get_free_credential_ids()
+            if not free_ids:
+                print("   -> ✅ No quedan credenciales libres. Ciclo maestro finalizado.")
+                print("="*72 + "\n")
+                return
+
+            # ¿Hay frases para esta ciudad?
+            try:
+                phrases = get_campaign_phrases_by_city(drive, campaign_id, city) or []
+                # limpieza ligera similar a tu uso
+                seen = set()
+                phrases = [p.strip() for p in phrases if p and p.strip() and not (p.strip() in seen or seen.add(p.strip()))]
+            except Exception as e:
+                print(f"   -> ⚠️ Error obteniendo frases para {city} (campaña {campaign_id}): {e}")
+                continue
+
+            if not phrases:
+                print(f"   -> (sin frases) {city} @ campaña {campaign_id} → se omite.")
+                continue
+
+            print(f"\n▶️  Iteración: campaña {campaign_id} · ciudad '{city}' · {len(phrases)} frases")
+            pre_free = set(free_ids)  # snapshot para detectar cuál credencial se asigna
+
+            # Ejecuta TU flujo existente (no se modifica su código)
+            try:
+                run_semrush_config_account_flow(campaign_id, city)
+            except Exception as e:
+                print(f"   -> 🚨 Error en run_semrush_config_account_flow({campaign_id}, {city}): {e}")
+                # NO se detiene el ciclo; intenta siguiente ciudad
+                continue
+
+            # Detecta cuál credencial se asignó en esta iteración y actualiza 'note' = ciudad
+            assigned_id = _pick_newly_assigned_credential_id(campaign_id, pre_free)
+            if assigned_id:
+                _update_credential_note(assigned_id, city)
+            else:
+                print("   -> ⚠️ No se pudo identificar la credencial asignada para actualizar 'note'.")
+
+            iter_count += 1
+            if delay_seconds and delay_seconds > 0:
+                _sleep(delay_seconds)
+
+    print("\n" + "="*72)
+    print("✅ CICLO MAESTRO FINALIZADO: sin credenciales libres o sin más combinaciones útiles.")
+    print("="*72 + "\n")
