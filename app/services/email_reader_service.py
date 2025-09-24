@@ -9,12 +9,12 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
 from email.header import decode_header
-from typing import List
+from typing import List, Optional
 
-# --- NUEVA CONSTANTE: RUTA A THUNDERBIRD ---
+# --- CONSTANTE: RUTA A THUNDERBIRD ---
 THUNDERBIRD_PATH = r"C:\Program Files\Mozilla Thunderbird\thunderbird.exe"
 
-# ----------------------- Nueva Función de Sincronización ----------------------- #
+# ----------------------- Función de Sincronización ----------------------- #
 
 def _open_and_sync_thunderbird(duration_seconds: int = 30):
     """Abre Thunderbird, espera para que sincronice y luego lo cierra de forma segura."""
@@ -45,7 +45,6 @@ def _open_and_sync_thunderbird(duration_seconds: int = 30):
                 print("   -> Thunderbird no respondió, forzando el cierre.")
                 process.kill()
             print("   -> Thunderbird cerrado.\n")
-
 
 # ----------------------- Utilidades (sin cambios) ----------------------- #
 
@@ -94,10 +93,8 @@ def _get_html_part(msg):
     """
     if msg.is_multipart():
         for part in msg.walk():
-            # Busca la parte que es explícitamente HTML
             if part.get_content_type() == "text/html":
                 return part
-    # Si el correo no es multiparte pero es HTML
     elif msg.get_content_type() == "text/html":
         return msg
     return None
@@ -105,22 +102,16 @@ def _get_html_part(msg):
 def _extract_semrush_code_from_html(msg):
     """
     Extrae específicamente el código de 6 dígitos de un correo HTML de Semrush.
-    Busca el código dentro de un elemento con la clase 'ct-code'.
     """
-    # 1. Obtener la parte HTML del correo
     html_part = _get_html_part(msg)
     if not html_part:
         return None
 
     try:
-        # 2. Decodificar el contenido del HTML (maneja 'quoted-printable', etc.)
         html_body = html_part.get_payload(decode=True).decode(
             html_part.get_content_charset() or 'utf-8', 
             errors="replace"
         )
-        
-        # 3. Expresión regular para encontrar el código en su contenedor específico
-        # Busca: class="ct-code" ... > ... 423969 ... </div>
         match = re.search(r'class="ct-code".*?>.*?(\d{6}).*?</div>', html_body, re.DOTALL)
         if match:
             code = match.group(1)
@@ -155,7 +146,10 @@ def _get_body_text(msg):
         for part in msg.walk():
             if part.get_content_type() == "text/plain":
                 try:
-                    return " ".join((part.get_content() or "").split())
+                    # Decodificar el contenido si es necesario
+                    payload = part.get_payload(decode=True)
+                    charset = part.get_content_charset() or 'utf-8'
+                    return payload.decode(charset, errors='replace')
                 except Exception:
                     continue
     try:
@@ -189,33 +183,51 @@ def _collect_messages(profile_dir):
                             results.append(msg)
     return results
 
-def _extract_six_digits_from_msg(msg):
+# =================================================================================
+# NUEVO: Lógica de extracción de códigos mejorada
+# =================================================================================
+def _extract_verification_code_from_msg(msg) -> Optional[str]:
     """
-    Extrae un código de 6 dígitos de un correo.
-    Primero intenta una lógica específica para HTML de Semrush, y si no,
-    usa una búsqueda genérica en texto plano como respaldo.
+    Extrae un código de verificación de un correo.
+    Prioriza lógicas específicas (GitHub, Semrush) y luego usa una búsqueda genérica.
     """
-    # --- Lógica Mejorada ---
-
-    # 1. Verificar si el correo es de Semrush
     from_header = _decode_header_value(msg.get("From", "")).lower()
+    subject = _decode_header_value(msg.get("Subject", ""))
+    body = _get_body_text(msg)
+
+    # --- Lógica específica para GitHub (8 dígitos) ---
+    if "github" in from_header:
+        print("   -> 🕵️  Detectado correo de GitHub. Usando lógica específica...")
+        # Busca un número de 8 dígitos que esté solo en una línea, como en el .eml
+        match = re.search(r'^\s*(\d{8})\s*$', body, re.MULTILINE)
+        if match:
+            code = match.group(1)
+            print(f"   -> ✨ Código de GitHub encontrado: {code}")
+            return code
+
+    # --- Lógica específica para Semrush (6 dígitos en HTML) ---
     if "semrush" in from_header:
-        # Intentar la nueva extracción específica para HTML
+        print("   -> 🕵️  Detectado correo de Semrush. Usando lógica de HTML...")
         code = _extract_semrush_code_from_html(msg)
         if code:
-            return code  # ¡Éxito! Devolvemos el código encontrado
+            return code
 
-    # 2. Si no es de Semrush o la lógica de HTML falló, usar el método anterior
-    print("   -> Usando lógica de extracción genérica (texto plano)...")
-    subject = _decode_header_value(msg.get("Subject"))
-    m_subject = re.search(r"\b(\d{6})\b", subject)
-    if m_subject: 
-        return m_subject.group(1)
+    # --- Lógica Genérica (Fallback) ---
+    print("   -> ⚙️  Usando lógica de extracción genérica (6-8 dígitos)...")
+    # Busca un código de 6 a 8 dígitos en el asunto o en el cuerpo.
+    generic_pattern = r"\b(\d{6,8})\b"
     
-    body = _get_body_text(msg)
-    m_body = re.search(r"\b(\d{6})\b", body)
-    if m_body: 
-        return m_body.group(1)
+    match_subject = re.search(generic_pattern, subject)
+    if match_subject:
+        code = match_subject.group(1)
+        print(f"   -> ✨ Código genérico encontrado en el asunto: {code}")
+        return code
+    
+    match_body = re.search(generic_pattern, body)
+    if match_body:
+        code = match_body.group(1)
+        print(f"   -> ✨ Código genérico encontrado en el cuerpo: {code}")
+        return code
 
     return None
 
@@ -225,14 +237,14 @@ def get_latest_verification_code(
     subject_keywords: List[str],
     profile_path: str = None,
     timeout_seconds: int = 60
-) -> str | None:
+) -> Optional[str]:
     """
     Abre Thunderbird para sincronizar, luego busca el correo de verificación más reciente 
     cuyo asunto contenga las palabras clave y devuelve el código.
     """
     _open_and_sync_thunderbird(duration_seconds=60)
 
-    print(f"📧 Buscando código de verificación de 6 dígitos en los correos de Thunderbird...")
+    print(f"📧 Buscando código de verificación en los correos de Thunderbird...")
     start_time = time.time()
     
     while time.time() - start_time < timeout_seconds:
@@ -254,13 +266,15 @@ def get_latest_verification_code(
 
             verification_emails.sort(key=lambda t: (t[0] is not None, t[0]), reverse=True)
             latest_msg = verification_emails[0][1]
-            code = _extract_six_digits_from_msg(latest_msg)
+            
+            # Utiliza la nueva función de extracción mejorada
+            code = _extract_verification_code_from_msg(latest_msg)
 
             if code:
-                print(f"✅ Código de verificación encontrado: {code}")
+                # No es necesario imprimir aquí, la función de extracción ya lo hace
                 return code
             else:
-                print(f"   -> Correo de verificación encontrado, pero sin código. Reintentando...")
+                print(f"   -> Correo de verificación encontrado (Asunto: '{_decode_header_value(latest_msg.get('Subject'))}'), pero no se pudo extraer un código. Reintentando...")
 
         except Exception as e:
             print(f"⚠️ Error al leer los correos: {e}. Reintentando...")
