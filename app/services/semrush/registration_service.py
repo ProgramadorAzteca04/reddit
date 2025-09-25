@@ -524,7 +524,7 @@ def run_semrush_signup_flow_batch(times: int, delay_seconds: float = 10.0) -> No
         times = MAX_TIMES
 
     for i in range(1, times + 1):
-        print(f"\n=== ▶️ Inicio de registro #{i}/{times} ===")
+        print(f"\n=== ▶️  Iniciando Ciclo de Registro #{i} de {times} ===")
         try:
             run_semrush_signup_flow()
         except Exception as e:
