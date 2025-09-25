@@ -1,3 +1,4 @@
+# app/services/semrush/login_service.py
 from app.api.v1.endpoints.drive_campaign import (
     build_drive_client,
     get_campaign_phrases_by_city,
@@ -525,14 +526,16 @@ def run_semrush_login_flow(credential_id: int):
 # Flujo de CONFIGURACIÓN DE CUENTA (misma lógica, endurecida)
 # ───────────────────────────────────────────────────────────────────────────────
 
-def run_semrush_config_account_flow(id_campaign: int, city: str):
+def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: Optional[int] = None):
     """
     Busca una cuenta de Semrush sin campaña, realiza el login, configura el proyecto
     con la web de la campaña y, solo si tiene éxito, actualiza la base de datos.
     """
     print("\n" + "="*60)
-    print(f"🚀 INICIANDO FLUJO: Configuración de cuenta para Campaña ID #{id_campaign} en {city}.")
+    cycle_info = f" (Ciclo Maestro #{cycle_number})" if cycle_number is not None else ""
+    print(f"🚀 INICIANDO FLUJO{cycle_info}: Configuración de cuenta para Campaña ID #{id_campaign} en {city}.")
     print("="*60)
+
 
     # Paso 1: Buscar credencial y campaña
     db = next(get_db())
@@ -1005,12 +1008,13 @@ def run_semrush_cycle_config_accounts(
                 print(f"   -> (sin frases) {city} @ campaña {campaign_id} → se omite.")
                 continue
 
-            print(f"\n▶️  Iteración: campaña {campaign_id} · ciudad '{city}' · {len(phrases)} frases")
+            iter_count += 1
+            print(f"\n▶️  Iniciando Ciclo de Configuración #{iter_count}: Campaña {campaign_id} · Ciudad '{city}' · {len(phrases)} frases")
             pre_free = set(free_ids)  # snapshot para detectar cuál credencial se asigna
 
             # Ejecuta TU flujo existente (no se modifica su código)
             try:
-                run_semrush_config_account_flow(campaign_id, city)
+                run_semrush_config_account_flow(campaign_id, city, cycle_number=iter_count)
             except Exception as e:
                 print(f"   -> 🚨 Error en run_semrush_config_account_flow({campaign_id}, {city}): {e}")
                 # NO se detiene el ciclo; intenta siguiente ciudad
@@ -1023,7 +1027,6 @@ def run_semrush_cycle_config_accounts(
             else:
                 print("   -> ⚠️ No se pudo identificar la credencial asignada para actualizar 'note'.")
 
-            iter_count += 1
             if delay_seconds and delay_seconds > 0:
                 _sleep(delay_seconds)
 
