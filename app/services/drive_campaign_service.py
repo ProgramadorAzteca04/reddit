@@ -202,9 +202,35 @@ def download_excel_bytes(drive: Resource, file: DriveFile) -> bytes:
 
 def read_programacion_dataframe(xlsx_bytes: bytes, header_row_index: int = 1) -> pd.DataFrame:
     """
-    Lee el Excel a DataFrame. Usa header=1 (segunda fila) como en tu script.
+    Lee el Excel a DataFrame. Prioriza las hojas "CIUDADES TRABAJADAS" o "CIUDADES".
+    Usa header=1 (segunda fila) como en tu script.
     """
-    df = pd.read_excel(io.BytesIO(xlsx_bytes), header=header_row_index)
+    sheet_to_read = 0  # Por defecto, la primera hoja
+
+    try:
+        xls = pd.ExcelFile(io.BytesIO(xlsx_bytes))
+        # Crea un mapa de nombres de hoja insensi ble a mayúsculas
+        sheet_map = {name.upper().strip(): name for name in xls.sheet_names}
+        
+        print(f"   -> Hojas encontradas en el archivo: {xls.sheet_names}")
+
+        # Comprueba las hojas en orden de prioridad
+        if "CIUDADES TRABAJADAS" in sheet_map:
+            sheet_to_read = sheet_map["CIUDADES TRABAJADAS"]
+            print(f"   -> ✅ Se leerá la hoja prioritaria: '{sheet_to_read}'")
+        elif "CIUDADES" in sheet_map:
+            sheet_to_read = sheet_map["CIUDADES"]
+            print(f"   -> ✅ Se leerá la hoja: '{sheet_to_read}'")
+        else:
+            print(f"   -> ⚠️ No se encontraron las hojas 'CIUDADES TRABAJADAS' o 'CIUDADES'. Leyendo la primera hoja por defecto.")
+
+    except Exception as e:
+        print(f"   -> ⚠️ No se pudo inspeccionar las hojas del archivo ({e}). Se intentará leer la primera hoja.")
+
+    # Lee la hoja seleccionada (o la primera por defecto)
+    df = pd.read_excel(io.BytesIO(xlsx_bytes), sheet_name=sheet_to_read, header=header_row_index)
+    
+    # Rellena los valores nulos en la columna CIUDAD para agrupar correctamente
     if 'CIUDAD' in df.columns:
         df['CIUDAD'] = df['CIUDAD'].ffill()
     return df
@@ -212,13 +238,28 @@ def read_programacion_dataframe(xlsx_bytes: bytes, header_row_index: int = 1) ->
 
 def get_available_cities(df: pd.DataFrame) -> List[str]:
     """
-    Devuelve ciudades únicas, limpias y ordenadas.
+    Devuelve ciudades únicas, limpias y ordenadas, omitiendo valores que parecen encabezados
+    y filtrando solo aquellas que siguen el formato 'Ciudad, Estado'.
     """
     if 'CIUDAD' not in df.columns:
         return []
+    
     serie = df['CIUDAD'].dropna().astype(str).map(str.strip)
-    serie = serie[serie != ""]
-    return sorted(set(serie.tolist()))
+    # Filtra cadenas vacías
+    valid_serie = serie[serie != ""]
+    
+    # 1. Omite cualquier valor que comience con "SEMANA" (insensible a mayúsculas)
+    # 2. Se queda solo con los valores que contienen una coma, asumiendo el formato "Ciudad, Estado".
+    cities_with_format = [
+        city for city in valid_serie 
+        if not city.upper().startswith("SEMANA") and "," in city
+    ]
+    
+    cities = sorted(set(cities_with_format))
+    
+    # Imprime el resultado final
+    print(f"   -> Ciudades encontradas (filtradas por formato 'Ciudad, Estado'): {cities}")
+    return cities
 
 
 def get_phrases_for_city(df: pd.DataFrame, city: str) -> List[str]:
@@ -234,8 +275,9 @@ def get_phrases_for_city(df: pd.DataFrame, city: str) -> List[str]:
     if sub.empty:
         return []
 
-    frases = sub['FRASE OBJETIVA'].dropna().astype(str).map(str.strip)
-    frases = [f for f in frases.tolist() if f]
+    frases_serie = sub['FRASE OBJETIVA'].dropna().astype(str).map(str.strip)
+    frases = [f for f in frases_serie.tolist() if f]
+    print(f"   -> Frases para '{city}': {frases}")
     return frases
 
 
@@ -257,6 +299,7 @@ def get_campaign_cities(
     """
     f = select_campaign_programacion_file(drive, campaign_id)
     if not f:
+        print(f"   -> ❌ No se encontró un archivo de programación válido para la campaña ID: {campaign_id}")
         return []
     xlsx = download_excel_bytes(drive, f)
     df = read_programacion_dataframe(xlsx)
@@ -273,6 +316,7 @@ def get_campaign_phrases_by_city(
     """
     f = select_campaign_programacion_file(drive, campaign_id)
     if not f:
+        print(f"   -> ❌ No se encontró un archivo de programación válido para la campaña ID: {campaign_id}")
         return []
     xlsx = download_excel_bytes(drive, f)
     df = read_programacion_dataframe(xlsx)
