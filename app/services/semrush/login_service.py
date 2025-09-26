@@ -19,7 +19,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from typing import List, Optional, Set, Dict, Tuple
 from app.db.database import get_db
-from sqlalchemy import asc
+# MODIFICADO: Se importa func para el ordenamiento aleatorio y asc para el ordenamiento ascendente
+from sqlalchemy import asc, func
 from app.api.v1.endpoints.drive_campaign import (
     build_drive_client,
     list_accessible_campaign_ids,
@@ -30,10 +31,12 @@ from app.api.v1.endpoints.drive_campaign import (
 import traceback
 import time
 import os
+# MODIFICADO: Se importa la librería random
+import random
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Helpers de resiliencia (no alteran la lógica, solo la endurecen)
+# Helpers de resiliencia (sin cambios)
 # ───────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_STEP_TIMEOUT = 30
@@ -168,7 +171,7 @@ def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Logout robusto (prioriza los selectores exactos proporcionados por el usuario)
+# Logout robusto (sin cambios)
 # ───────────────────────────────────────────────────────────────────────────────
 
 def _open_home(driver: WebDriver):
@@ -374,7 +377,7 @@ def _persist_proxy_choice(credential_id: int, host: str, port: str) -> bool:
         except Exception:
             pass
 # ───────────────────────────────────────────────────────────────────────────────
-# Flujo de LOGIN (misma lógica, endurecida)
+# Flujo de LOGIN (sin cambios)
 # ───────────────────────────────────────────────────────────────────────────────
 
 def run_semrush_login_flow(credential_id: int):
@@ -523,7 +526,7 @@ def run_semrush_login_flow(credential_id: int):
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Flujo de CONFIGURACIÓN DE CUENTA (misma lógica, endurecida)
+# Flujo de CONFIGURACIÓN DE CUENTA (MODIFICADO)
 # ───────────────────────────────────────────────────────────────────────────────
 
 def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: Optional[int] = None):
@@ -540,8 +543,12 @@ def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: O
     # Paso 1: Buscar credencial y campaña
     db = next(get_db())
     try:
-        print("   -> 🔍 Buscando una credencial disponible en la base de datos...")
-        credential_to_use = db.query(CredentialSemrush).filter(CredentialSemrush.id_campaigns == None).first()
+        print("   -> 🔍 Buscando una credencial disponible y aleatoria en la base de datos...")
+        # MODIFICADO: Se añade un ordenamiento aleatorio para no tomar siempre la misma credencial.
+        credential_to_use = db.query(CredentialSemrush).filter(
+            CredentialSemrush.id_campaigns == None
+        ).order_by(func.random()).first()
+
         if not credential_to_use:
             print("   -> ❌ No se encontró ninguna credencial con 'id_campaigns' vacío.")
             return
@@ -907,6 +914,9 @@ def _campaigns_in_db(campaign_ids: List[int]) -> List[int]:
     finally:
         db.close()
 
+# ───────────────────────────────────────────────────────────────────────────────
+# CICLO MAESTRO (MODIFICADO)
+# ───────────────────────────────────────────────────────────────────────────────
 def run_semrush_cycle_config_accounts(
     delay_seconds: float = 8.0,
     max_total_iterations: Optional[int] = None
@@ -914,9 +924,10 @@ def run_semrush_cycle_config_accounts(
     """
     Ciclo maestro:
     - Mientras haya credenciales libres (id_campaigns NULL),
-      recorre campañas accesibles en Drive (orden ascendente) y sus ciudades (ordenadas).
+      recorre campañas accesibles en Drive (orden aleatorio) y sus ciudades (orden aleatorio).
     - Para cada (campaña, ciudad) con frases disponibles:
         * Llama a run_semrush_config_account_flow(campaign_id, city)
+        * Si el flujo falla, lo reporta y continúa con el siguiente.
         * Detecta la credencial asignada y actualiza 'note' = ciudad usada.
     - Se detiene cuando:
         * No quedan credenciales libres, o
@@ -952,6 +963,10 @@ def run_semrush_cycle_config_accounts(
 
     # Filtra a campañas que existen en tu tabla Campaign y ordena asc
     campaign_queue = _campaigns_in_db(accessible)
+    # MODIFICADO: Se desordena la lista de campañas para procesarlas aleatoriamente.
+    random.shuffle(campaign_queue)
+    print(f"   -> 🎲 Se procesarán {len(campaign_queue)} campañas en orden aleatorio.")
+
     if not campaign_queue:
         print("   -> ⚠️ No hay campañas accesibles (Drive) que existan en BD. Nada por hacer.")
         print("="*72 + "\n")
@@ -967,9 +982,11 @@ def run_semrush_cycle_config_accounts(
             print("   -> ✅ No quedan credenciales libres. Ciclo maestro finalizado.")
             break
 
-        # Ciudades de la campaña (ordenadas)
+        # Ciudades de la campaña
         try:
-            cities = sorted(get_campaign_cities(drive, campaign_id) or [])
+            cities = get_campaign_cities(drive, campaign_id) or []
+            # MODIFICADO: Se desordena la lista de ciudades para procesarlas aleatoriamente.
+            random.shuffle(cities)
         except Exception as e:
             print(f"   -> ⚠️ No se pudieron obtener ciudades para campaña {campaign_id}: {e}")
             continue
@@ -978,7 +995,7 @@ def run_semrush_cycle_config_accounts(
             print(f"   -> ⚠️ Campaña {campaign_id} no tiene ciudades disponibles. Se omite.")
             continue
 
-        print(f"\n— Campaña #{campaign_id}: {len(cities)} ciudades candidatas —")
+        print(f"\n— Campaña #{campaign_id}: {len(cities)} ciudades candidatas (en orden aleatorio) —")
 
         for city in cities:
             # Tope de seguridad
@@ -1012,13 +1029,15 @@ def run_semrush_cycle_config_accounts(
             print(f"\n▶️  Iniciando Ciclo de Configuración #{iter_count}: Campaña {campaign_id} · Ciudad '{city}' · {len(phrases)} frases")
             pre_free = set(free_ids)  # snapshot para detectar cuál credencial se asigna
 
-            # Ejecuta TU flujo existente (no se modifica su código)
+            # MODIFICADO: Se envuelve la llamada en un bloque try/except para continuar si falla.
             try:
                 run_semrush_config_account_flow(campaign_id, city, cycle_number=iter_count)
             except Exception as e:
-                print(f"   -> 🚨 Error en run_semrush_config_account_flow({campaign_id}, {city}): {e}")
-                # NO se detiene el ciclo; intenta siguiente ciudad
-                continue
+                print(f"   -> 🚨 ERROR INESPERADO en el flujo para Campaña {campaign_id}, Ciudad '{city}'.")
+                print(f"   ->    Error: {e}")
+                print(f"   -> ⏭️  Continuando con la siguiente iteración del ciclo...")
+                traceback.print_exc()
+                continue # Continúa con la siguiente ciudad/campaña
 
             # Detecta cuál credencial se asignó en esta iteración y actualiza 'note' = ciudad
             assigned_id = _pick_newly_assigned_credential_id(campaign_id, pre_free)
