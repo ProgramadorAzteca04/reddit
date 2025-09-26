@@ -19,7 +19,6 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
 from typing import List, Optional, Set, Dict, Tuple
 from app.db.database import get_db
-# MODIFICADO: Se importa func para el ordenamiento aleatorio y asc para el ordenamiento ascendente
 from sqlalchemy import asc, func
 from app.api.v1.endpoints.drive_campaign import (
     build_drive_client,
@@ -31,7 +30,6 @@ from app.api.v1.endpoints.drive_campaign import (
 import traceback
 import time
 import os
-# MODIFICADO: Se importa la librería random
 import random
 
 
@@ -526,7 +524,7 @@ def run_semrush_login_flow(credential_id: int):
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Flujo de CONFIGURACIÓN DE CUENTA (MODIFICADO)
+# Flujo de CONFIGURACIÓN DE CUENTA (MODIFICADO CON PAUSAS)
 # ───────────────────────────────────────────────────────────────────────────────
 
 def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: Optional[int] = None):
@@ -544,7 +542,6 @@ def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: O
     db = next(get_db())
     try:
         print("   -> 🔍 Buscando una credencial disponible y aleatoria en la base de datos...")
-        # MODIFICADO: Se añade un ordenamiento aleatorio para no tomar siempre la misma credencial.
         credential_to_use = db.query(CredentialSemrush).filter(
             CredentialSemrush.id_campaigns == None
         ).order_by(func.random()).first()
@@ -727,6 +724,10 @@ def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: O
                                    "Continuar a Palabras clave (texto)"):
                 _best_effort_logout(driver, wait); return
         print("   -> ✅ Avanzaste a 'Palabras clave'.")
+        # --- NUEVA PAUSA AÑADIDA ---
+        print("   -> ⏳ Dando tiempo extra para que la sección de palabras clave cargue...")
+        _sleep(8)
+        # ---------------------------
 
         # Paso 3g: Obtener frases desde Google Drive para esta campaña/ciudad
         print("\n   -> 🔎 Obteniendo frases de Drive para la ciudad y campaña dadas...")
@@ -750,7 +751,9 @@ def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: O
 
         # Paso 3h: Pegar frases (separadas por comas) en el textarea de "Palabras clave"
         print("\n   -> 📝 Pegando frases en el textarea de 'Palabras clave'...")
-        _sleep(3)
+        # --- PAUSA AÑADIDA (AUMENTADA) ---
+        _sleep(5)
+        # ---------------------------------
 
         def _sanitize_phrase(s):
             s = str(s).strip()
@@ -786,12 +789,26 @@ def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: O
 
         # Paso 3i: Clic en "Iniciar rastreo"
         print("\n   -> ▶️ Iniciando rastreo (clic en 'Iniciar rastreo')...")
-        _sleep(2)
+        # --- NUEVA PAUSA AÑADIDA ---
+        _sleep(5)
+        # ---------------------------
         if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo (ID)"):
             if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar rastreo"]]'),
                                    "Iniciar rastreo (texto)"):
                 _best_effort_logout(driver, wait); return
         _sleep(5)
+
+        # <--- INICIO: NUEVO BLOQUE PARA MANEJAR ERROR "ALGO SALIÓ MAL" --->
+        print("\n   -> 🔄 Verificando si apareció un error para reintentar...")
+        retry_button_locator = (By.XPATH, '//button[.//span[text()="Inténtalo de nuevo"]]')
+        # Usamos un timeout más corto para no demorar el flujo si no hay error.
+        short_wait = WebDriverWait(driver, 8) 
+        if _wait_and_click(short_wait, driver, retry_button_locator, "botón 'Inténtalo de nuevo'", retries=1):
+            print("      -> ✅ Error detectado y se hizo clic en reintentar. Esperando 15 segundos...")
+            _sleep(15)
+        else:
+            print("      -> No se encontró el botón de reintento (comportamiento normal).")
+        # <--- FIN: NUEVO BLOQUE --->
 
         # Paso 4: SOLO SI TODO LO ANTERIOR ES CORRECTO, actualizar la BD
         print("\n   -> 💾 Proceso de automatización exitoso. Actualizando la base de datos...")
@@ -915,7 +932,7 @@ def _campaigns_in_db(campaign_ids: List[int]) -> List[int]:
         db.close()
 
 # ───────────────────────────────────────────────────────────────────────────────
-# CICLO MAESTRO (MODIFICADO)
+# CICLO MAESTRO (CON CONTADORES)
 # ───────────────────────────────────────────────────────────────────────────────
 def run_semrush_cycle_config_accounts(
     delay_seconds: float = 8.0,
@@ -938,6 +955,11 @@ def run_semrush_cycle_config_accounts(
     print("\n" + "="*72)
     print("🧭 INICIANDO CICLO MAESTRO: configurar cuentas por campaña → ciudades")
     print("="*72)
+
+    # --- Inicialización de contadores ---
+    successful_configurations = 0
+    failed_configurations = 0
+    # ------------------------------------
 
     # 0) Estado inicial: hay credenciales libres?
     free_ids = _get_free_credential_ids()
@@ -963,7 +985,6 @@ def run_semrush_cycle_config_accounts(
 
     # Filtra a campañas que existen en tu tabla Campaign y ordena asc
     campaign_queue = _campaigns_in_db(accessible)
-    # MODIFICADO: Se desordena la lista de campañas para procesarlas aleatoriamente.
     random.shuffle(campaign_queue)
     print(f"   -> 🎲 Se procesarán {len(campaign_queue)} campañas en orden aleatorio.")
 
@@ -985,7 +1006,6 @@ def run_semrush_cycle_config_accounts(
         # Ciudades de la campaña
         try:
             cities = get_campaign_cities(drive, campaign_id) or []
-            # MODIFICADO: Se desordena la lista de ciudades para procesarlas aleatoriamente.
             random.shuffle(cities)
         except Exception as e:
             print(f"   -> ⚠️ No se pudieron obtener ciudades para campaña {campaign_id}: {e}")
@@ -1001,15 +1021,13 @@ def run_semrush_cycle_config_accounts(
             # Tope de seguridad
             if max_total_iterations is not None and iter_count >= max_total_iterations:
                 print("   -> ⛔ Tope de iteraciones alcanzado. Salida segura.")
-                print("="*72 + "\n")
-                return
+                break
 
             # ¿Aún hay credenciales libres?
             free_ids = _get_free_credential_ids()
             if not free_ids:
                 print("   -> ✅ No quedan credenciales libres. Ciclo maestro finalizado.")
-                print("="*72 + "\n")
-                return
+                break # Sale del bucle de ciudades
 
             # ¿Hay frases para esta ciudad?
             try:
@@ -1029,7 +1047,7 @@ def run_semrush_cycle_config_accounts(
             print(f"\n▶️  Iniciando Ciclo de Configuración #{iter_count}: Campaña {campaign_id} · Ciudad '{city}' · {len(phrases)} frases")
             pre_free = set(free_ids)  # snapshot para detectar cuál credencial se asigna
 
-            # MODIFICADO: Se envuelve la llamada en un bloque try/except para continuar si falla.
+            # Ejecuta TU flujo existente (no se modifica su código)
             try:
                 run_semrush_config_account_flow(campaign_id, city, cycle_number=iter_count)
             except Exception as e:
@@ -1037,18 +1055,32 @@ def run_semrush_cycle_config_accounts(
                 print(f"   ->    Error: {e}")
                 print(f"   -> ⏭️  Continuando con la siguiente iteración del ciclo...")
                 traceback.print_exc()
-                continue # Continúa con la siguiente ciudad/campaña
+                failed_configurations += 1
+                continue
 
             # Detecta cuál credencial se asignó en esta iteración y actualiza 'note' = ciudad
             assigned_id = _pick_newly_assigned_credential_id(campaign_id, pre_free)
             if assigned_id:
                 _update_credential_note(assigned_id, city)
+                successful_configurations += 1
             else:
                 print("   -> ⚠️ No se pudo identificar la credencial asignada para actualizar 'note'.")
+                failed_configurations += 1
 
             if delay_seconds and delay_seconds > 0:
                 _sleep(delay_seconds)
+        
+        # Si se agotaron las credenciales o se alcanzó el tope, salir del bucle principal de campañas
+        if not _get_free_credential_ids() or (max_total_iterations is not None and iter_count >= max_total_iterations):
+            break
 
+    # --- Impresión del resumen final ---
     print("\n" + "="*72)
+    print("📊 RESUMEN DEL CICLO MAESTRO")
+    print("="*72)
+    print(f"   -> ✅ Configuraciones Exitosas: {successful_configurations}")
+    print(f"   -> ❌ Configuraciones Fallidas: {failed_configurations}")
+    print(f"   -> 🔄 Total de Iteraciones: {iter_count}")
+    print("="*72)
     print("✅ CICLO MAESTRO FINALIZADO: sin credenciales libres o sin más combinaciones útiles.")
     print("="*72 + "\n")
