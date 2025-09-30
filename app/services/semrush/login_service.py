@@ -609,7 +609,7 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, all_ci
             
             drive = build_drive_client()
             phrases = get_campaign_phrases_by_city(drive, id_campaign, city_candidate) or []
-            phrases = list(dict.fromkeys(p.strip() for p in phrases if p and p.strip())) # Limpiar y eliminar duplicados
+            phrases = list(dict.fromkeys(p.strip() for p in phrases if p and p.strip()))
             if not phrases:
                 print("      -> Sin frases disponibles. Saltando a la siguiente ciudad.")
                 continue
@@ -629,10 +629,15 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, all_ci
                 raise Exception("Fallo en el login inicial")
 
             web_input_sel = (By.CSS_SELECTOR, 'input[data-ui-name="Input.Value"][placeholder="Indica el nombre de tu sitio web"]')
+            visibility_locator = (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]')
+
             if not _wait_visible(wait, driver, web_input_sel, "input web", timeout=15):
-                if not _handle_existing_project(driver, wait):
+                print("\n   -> ⚠️ No se encontró el input de la web. Verificando si ya existe un proyecto...")
+                if _wait_visible(wait, driver, visibility_locator, "Bloque 'Supervisa el posicionamiento'", timeout=5):
+                    if not _handle_existing_project(driver, wait) or not _wait_visible(wait, driver, web_input_sel, "input web (tras limpieza)"):
+                        raise Exception("Falló la eliminación del proyecto o el input no apareció después.")
+                else:
                     print("   -> 🛑 La cuenta está en un estado configurado no estándar. No se puede proceder.")
-                    print("      -> Marcando la cuenta en la BD para evitar futuros intentos.")
                     db = next(get_db())
                     try:
                         cred_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
@@ -643,9 +648,6 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, all_ci
                     finally:
                         db.close()
                     return "PRECONFIGURED_STATE"
-                
-                if not _wait_visible(wait, driver, web_input_sel, "input web (tras limpieza)"):
-                    raise Exception("El input para crear proyecto no apareció después de eliminar el anterior.")
             
             if not _send_text_to_input(wait, driver, web_input_sel, web_url, "input web") or \
                not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Empieza ahora"]]'), "botón Empieza ahora"):
