@@ -264,7 +264,7 @@ def get_available_cities(df: pd.DataFrame) -> List[str]:
 
 def get_phrases_for_city(df: pd.DataFrame, city: str) -> List[str]:
     """
-    Filtra por ciudad (case-insensitive) y devuelve FRASE OBJETIVA (no nulas).
+    Filtra por ciudad (case-insensitive) y devuelve un MÁXIMO de 10 frases objetivas (no nulas).
     """
     for col in ('CIUDAD', 'FRASE OBJETIVA'):
         if col not in df.columns:
@@ -276,9 +276,15 @@ def get_phrases_for_city(df: pd.DataFrame, city: str) -> List[str]:
         return []
 
     frases_serie = sub['FRASE OBJETIVA'].dropna().astype(str).map(str.strip)
-    frases = [f for f in frases_serie.tolist() if f]
-    print(f"   -> Frases para '{city}': {frases}")
-    return frases
+
+    # Se extraen todas las frases como antes
+    todas_las_frases = [f for f in frases_serie.tolist() if f]
+
+    # Se limita la lista a un máximo de 10 frases
+    frases_limitadas = todas_las_frases[:10]
+
+    print(f"   -> Frases para '{city}' (limitado a 10): {frases_limitadas}")
+    return frases_limitadas
 
 
 # === High-level helpers para FastAPI ===
