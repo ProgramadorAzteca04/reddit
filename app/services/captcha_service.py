@@ -382,3 +382,58 @@ def solve_recaptcha_in_iframes(driver,
     except Exception as e:
         print(f"   -> ❌ Error general al resolver el reCAPTCHA: {e}")
         return False
+
+def detect_github_captcha_params(driver) -> Optional[Dict[str, Any]]:
+    """
+    Detecta el iframe del captcha personalizado de GitHub ("Octocaptcha") y extrae
+    todos los parámetros relevantes para su resolución.
+    """
+    from selenium.common.exceptions import NoSuchElementException
+    from urllib.parse import urlparse, parse_qs
+
+    print("   -> 🕵️  Buscando el iframe del CAPTCHA personalizado de GitHub ('Octocaptcha')...")
+    try:
+        # 1. Encontrar el iframe del captcha
+        iframe = driver.find_element(By.CSS_SELECTOR, "iframe.js-octocaptcha-frame")
+        
+        params = {"type": "GitHub Octocaptcha"}
+
+        # 2. Extraer la URL de origen del captcha y sus parámetros
+        src = iframe.get_attribute("data-src") or iframe.get_attribute("src")
+        if src:
+            params["iframe_src"] = src
+            # Parsear la URL para obtener los query params
+            parsed_url = urlparse(src)
+            query_params = parse_qs(parsed_url.query)
+            # Aplanar los valores de la lista si solo hay uno
+            for key, value in query_params.items():
+                if len(value) == 1:
+                    params[f"param_{key}"] = value[0]
+                else:
+                    params[f"param_{key}"] = value
+        
+        # 3. Extraer el host del captcha desde el input del token
+        try:
+            token_input = driver.find_element(By.CSS_SELECTOR, "input.js-octocaptcha-token")
+            params["data_octocaptcha_url"] = token_input.get_attribute("data-octocaptcha-url")
+        except NoSuchElementException:
+            pass # Es opcional
+
+        # 4. Extraer el timestamp y el secret
+        try:
+            timestamp_input = driver.find_element(By.NAME, "timestamp")
+            params["timestamp"] = timestamp_input.get_attribute("value")
+            
+            secret_input = driver.find_element(By.NAME, "timestamp_secret")
+            params["timestamp_secret"] = secret_input.get_attribute("value")
+        except NoSuchElementException:
+            pass # Son opcionales pero útiles
+
+        return params
+
+    except NoSuchElementException:
+        print("   -> ❌ No se encontró el iframe de Octocaptcha en la página.")
+        return None
+    except Exception as e:
+        print(f"   -> 🚨 Ocurrió un error inesperado al extraer los datos del captcha: {e}")
+        return None

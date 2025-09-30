@@ -28,13 +28,15 @@ from app.services.reddit.desktop_service import (DesktopUtils,
                                                   HumanInteractionUtils,
                                                   PathManager)
 from app.services.reddit.proxy_service import ProxyManager
+from app.services.captcha_service import detect_github_captcha_params
+
 
 # =========================
 # Configuración
 # =========================
 
 DEFAULT_STEP_TIMEOUT = 30
-JOIN_FALLBACK = "https://gist.github.com/join?return_to=https%3A%2F%2Fgist.github.com%2Fstarred&source=header-gist"
+JOIN_FALLBACK = "https://gist.github.com/join?return_to=https%3A%2F%2Fgist.github.com%2Fstarred%3Fsignup%3Dtrue"
 
 # =======================================
 # Utilidades de Interacción "Humana"
@@ -352,6 +354,58 @@ def run_github_sign_in_flow() -> bool:
         if not wait_and_click_image("visual_puzzle.png", timeout=60):
             print("❌ No apareció el puzzle visual o no se pudo hacer clic. El flujo no puede continuar.")
             return False
+        
+        # ▼▼▼ INICIO DEL BLOQUE DE CÓDIGO PARA IMPRIMIR DATOS DE POSTMAN ▼▼▼
+        print("\n-> 🧩 Analizando los parámetros del CAPTCHA en la página...")
+        time.sleep(5) # Damos un tiempo para que el iframe del captcha cargue
+        
+        def print_postman_data(captcha_params, page_url, proxy_details):
+            """Función auxiliar para imprimir los datos formateados para Postman."""
+            print("\n" + "="*25 + " DATOS PARA POSTMAN (2CAPTCHA) " + "="*24)
+            print("Copia y pega estos datos en Postman (Body -> form-data) para replicar la petición.")
+            print("-" * 72)
+            print(f"{'key':<20} | {'value'}")
+            print("-" * 72)
+            print(f"{'key':<20} | TU_API_KEY_DE_2CAPTCHA")
+            print(f"{'method':<20} | funcaptcha")
+            
+            # La publicKey de Arkose Labs para el registro de GitHub es estática
+            public_key = "B5B65265-2234-4A3C-A816-324ACC6A8BF5"
+            print(f"{'publicKey':<20} | {public_key}")
+            
+            surl = captcha_params.get('data_octocaptcha_url', 'https://octocaptcha.com')
+            print(f"{'surl':<20} | {surl}")
+            
+            print(f"{'pageurl':<20} | {page_url}")
+            print(f"{'json':<20} | 1")
+            
+            if proxy_details:
+                proxy_str = (
+                    f"{proxy_details.get('user')}:{proxy_details.get('pass')}@"
+                    f"{proxy_details.get('host')}:{proxy_details.get('port')}"
+                )
+                print(f"{'proxy':<20} | {proxy_str}")
+                # Asumimos SOCKS5 basado en la implementación de tu browser_service
+                print(f"{'proxytype':<20} | SOCKS5")
+                
+            print("=" * 72 + "\n")
+
+        try:
+            captcha_params = detect_github_captcha_params(driver) 
+            
+            if captcha_params:
+                print("   -> ✅ ¡Parámetros del CAPTCHA de GitHub detectados!")
+                for key, value in captcha_params.items():
+                    print(f"      -> {key}: {value}")
+                
+                # Llamamos a la función para imprimir los datos listos para Postman
+                print_postman_data(captcha_params, driver.current_url, proxy)
+            else:
+                print("   -> ⚠️ No se pudieron detectar los parámetros del Octocaptcha.")
+            
+        except Exception as e:
+            print(f"   -> ❌ Error al intentar detectar los parámetros del CAPTCHA: {e}")
+        # ▲▲▲ FIN DEL BLOQUE DE CÓDIGO PARA IMPRIMIR DATOS DE POSTMAN ▲▲▲
 
         # --- Proceso de verificación por correo electrónico ---
         print("\n-> 📧 Iniciando proceso de verificación de correo electrónico...")

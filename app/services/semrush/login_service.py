@@ -30,6 +30,7 @@ from app.api.v1.endpoints.drive_campaign import (
 import traceback
 import time
 import os
+import re
 import random
 
 
@@ -61,6 +62,16 @@ def _wait_clickable(wait: "WebDriverWait", driver: "WebDriver", locator, label: 
     except Exception as e:
         print(f"      -> ⚠️ Error esperando '{label}': {e}")
         return None
+    
+def _check_for_location_error(driver: WebDriver) -> bool:
+    """Verifica si el tooltip de error 'Escoge la ubicación en la lista' está visible."""
+    try:
+        error_locator = (By.XPATH, "//div[contains(@class, '___STooltip_') and contains(text(), 'Escoge la ubicación en la lista')]")
+        WebDriverWait(driver, 3).until(EC.visibility_of_element_located(error_locator))
+        print("      -> ❌ ERROR DETECTADO: La ubicación no es válida o no fue seleccionada de la lista.")
+        return True
+    except TimeoutException:
+        return False
 
 
 def _click_with_fallback(driver: "WebDriver", element, label: str) -> bool:
@@ -523,337 +534,181 @@ def run_semrush_login_flow(credential_id: int):
         print("="*60 + "\n")
 
 
+def _handle_existing_project(driver: WebDriver, wait: WebDriverWait) -> bool:
+    """Detecta y elimina un proyecto existente para permitir una nueva configuración."""
+    print("\n   -> ⚠️ No se encontró el input de la web. Verificando si ya existe un proyecto...")
+    visibility_locator = (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]')
+    if not _wait_visible(wait, driver, visibility_locator, "Bloque 'Supervisa el posicionamiento'", timeout=10):
+        print("      -> No se encontró ni el input de proyecto ni el dashboard existente.")
+        return False
+    
+    print("      -> ✅ Se detectó un dashboard de proyecto existente. Iniciando flujo de eliminación.")
+    try:
+        if not _wait_and_click(wait, driver, (By.CSS_SELECTOR, 'div[data-testid="settings-icon"]'), "Ícono de configuración"): return False
+        _sleep(1.5)
+        if not _wait_and_click(wait, driver, (By.CSS_SELECTOR, 'div[data-testid="delete-menu-item"]'), "Opción 'Eliminar proyecto'"): return False
+        _sleep(2)
+        
+        label_element = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, 'span[data-testid="multi-delete-confirm-code-number"]')))
+        code_match = re.search(r'\d+', label_element.text)
+        if not code_match: print("      -> ❌ No se pudo extraer el código numérico."); return False
+        
+        confirmation_code = code_match.group(0)
+        print(f"         -> Código de confirmación extraído: {confirmation_code}")
+
+        if not _send_text_to_input(wait, driver, (By.ID, "conformationCode"), confirmation_code, "Input de confirmación"): return False
+        
+        if not _wait_and_click(wait, driver, (By.XPATH, '//button[@data-testid="project-modal-button-action" and .//span[text()="Borrar"]]'), "Botón final 'Borrar'"): return False
+        
+        print("      -> ✅ Proyecto eliminado exitosamente.")
+        _sleep(5)
+        return True
+    except Exception as e:
+        print(f"      -> 🚨 Error durante la eliminación del proyecto: {e}")
+        return False
+
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Flujo de CONFIGURACIÓN DE CUENTA (MODIFICADO CON PAUSAS)
 # ───────────────────────────────────────────────────────────────────────────────
 
-def run_semrush_config_account_flow(id_campaign: int, city: str, cycle_number: Optional[int] = None):
+def run_semrush_config_account_flow(credential_id: int, id_campaign: int, all_cities_for_campaign: List[str] = [], cycle_number: Optional[int] = None) -> Optional[str]:
     """
-    Busca una cuenta de Semrush sin campaña, realiza el login, configura el proyecto
-    con la web de la campaña y, solo si tiene éxito, actualiza la base de datos.
+    Usa una credencial, prueba ciudades hasta encontrar una válida, configura el proyecto y actualiza la BD.
+    Maneja proyectos existentes y cuentas en estados no estándar. Devuelve un estado al finalizar.
     """
     print("\n" + "="*60)
-    cycle_info = f" (Ciclo Maestro #{cycle_number})" if cycle_number is not None else ""
-    print(f"🚀 INICIANDO FLUJO{cycle_info}: Configuración de cuenta para Campaña ID #{id_campaign} en {city}.")
+    cycle_info = f" (Ciclo Maestro #{cycle_number})" if cycle_number is not None else " (Ejecución Única)"
+    print(f"🚀 INICIANDO FLUJO{cycle_info}: Config. de Campaña ID #{id_campaign} en Credencial ID #{credential_id}.")
     print("="*60)
 
-
-    # Paso 1: Buscar credencial y campaña
     db = next(get_db())
     try:
-        print("   -> 🔍 Buscando una credencial disponible y aleatoria en la base de datos...")
-        credential_to_use = db.query(CredentialSemrush).filter(
-            CredentialSemrush.id_campaigns == None
-        ).order_by(func.random()).first()
-
-        if not credential_to_use:
-            print("   -> ❌ No se encontró ninguna credencial con 'id_campaigns' vacío.")
-            return
-        print(f"   -> ✅ Credencial encontrada (ID: {credential_to_use.id}), email: '{credential_to_use.email}'.")
-
-        print(f"   -> 🔍 Buscando la campaña con ID: {id_campaign}...")
+        credential_to_use = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
+        if not credential_to_use: print(f"   -> ❌ No se encontró credencial con ID: {credential_id}."); return "DB_ERROR"
         campaign = db.query(Campaign).filter(Campaign.id == id_campaign).first()
-        if not campaign:
-            print(f"   -> ❌ No se encontró ninguna campaña con el ID: {id_campaign}")
-            return
-        if not campaign.web:
-            print(f"   -> ❌ La campaña con ID {id_campaign} no tiene una URL web definida.")
-            return
-        print(f"   -> ✅ Campaña encontrada. Web a configurar: '{campaign.web}'")
-        
-        web_url = campaign.web
-        email = credential_to_use.email
-        password = credential_to_use.password
-        proxy_host = credential_to_use.proxy
-        proxy_port = credential_to_use.port
-
+        if not campaign or not campaign.web: print(f"   -> ❌ No se encontró campaña o no tiene web (ID: {id_campaign})."); return "DB_ERROR"
+        web_url, email, password, proxy_host, proxy_port = campaign.web, credential_to_use.email, credential_to_use.password, credential_to_use.proxy, credential_to_use.port
     finally:
         db.close()
 
-    # Paso 2: Configuración del navegador y login
-    CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-    URL = "https://es.semrush.com/login/"
-    USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
-    browser_manager = None
-    driver = None
-    
-    try:
-        proxy_manager = ProxyManager()
-        proxy_config = None
-
-        # --- Nueva lógica de elección y persistencia de proxy (igual que en login) ---
-        if proxy_host and proxy_port:
-            print(f"   -> Buscando proxy {proxy_host}:{proxy_port} en 'proxies.txt'...")
-            proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
-            if proxy_config:
-                print("      -> ✅ Proxy válido encontrado.")
-            else:
-                print(f"      -> ❌ Proxy {proxy_host}:{proxy_port} no existe en 'proxies.txt'.")
-                print("      -> 🔄 Tomando un proxy aleatorio y actualizando la BD...")
-                random_proxy = proxy_manager.get_random_proxy()
-                if random_proxy:
-                    # Persistimos el nuevo proxy en BD para esta credencial
-                    _persist_proxy_choice(
-                        credential_to_use.id,
-                        random_proxy.get("host", ""),
-                        str(random_proxy.get("port", ""))
-                    )
-                    # Actualizamos variables locales y configuración del navegador
-                    proxy_host = random_proxy.get("host")
-                    proxy_port = str(random_proxy.get("port"))
-                    proxy_config = random_proxy
-                    print(f"      -> ✅ Proxy aleatorio asignado: {proxy_host}:{proxy_port}")
-                else:
-                    print("      -> ⚠️ No hay proxies disponibles. Se continuará SIN proxy.")
-        else:
-            print("   -> ⚠️ La credencial no tiene proxy/port en BD.")
-            print("      -> 🔄 Tomando un proxy aleatorio y actualizando la BD...")
-            random_proxy = proxy_manager.get_random_proxy()
-            if random_proxy:
-                _persist_proxy_choice(
-                    credential_to_use.id,
-                    random_proxy.get("host", ""),
-                    str(random_proxy.get("port", ""))
-                )
-                proxy_host = random_proxy.get("host")
-                proxy_port = str(random_proxy.get("port"))
-                proxy_config = random_proxy
-                print(f"      -> ✅ Proxy aleatorio asignado: {proxy_host}:{proxy_port}")
-            else:
-                print("      -> ⚠️ No hay proxies disponibles. Se continuará SIN proxy.")
-        
-        browser_manager = BrowserManagerProxy(
-            chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="", proxy=proxy_config
-        )
-        driver = browser_manager.get_configured_driver(URL)
-        if not driver:
-            print("   -> ❌ No se pudo iniciar el driver de Selenium-Wire.")
-            return
-
-        print("\n   -> Esperando para que la página de login cargue...")
-        _sleep(20)
-        wait = WebDriverWait(driver, DEFAULT_STEP_TIMEOUT)
-
-        # Llenado del formulario de login
-        if not _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="email"]'), email, "input email", clear_first=False):
-            _best_effort_logout(driver, wait); return
-        if not _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="password"]'), password, "input password", clear_first=False):
-            _best_effort_logout(driver, wait); return
-        if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar sesión"]]'), "botón Iniciar sesión"):
-            _best_effort_logout(driver, wait); return
-
-        # Paso 3: Configurar el proyecto con la web
-        print("\n   -> 🌐 Esperando a la página de creación de proyecto...")
-        web_input_sel = (By.CSS_SELECTOR, 'input[data-ui-name="Input.Value"][placeholder="Indica el nombre de tu sitio web"]')
-        if not _wait_visible(wait, driver, web_input_sel, "input web del proyecto"):
-            _best_effort_logout(driver, wait); return
-        
-        print(f"   -> ✍️  Introduciendo la web '{web_url}' en el campo del proyecto...")
-        if not _send_text_to_input(wait, driver, web_input_sel, web_url, "input web del proyecto", clear_first=False):
-            _best_effort_logout(driver, wait); return
-        _sleep(2)
-        
-        # Paso 3a: Botón "Empieza ahora"
-        print("\n   -> 🛠️  Buscando el botón 'Empieza ahora'...")
-        if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Empieza ahora"]]'), "botón Empieza ahora"):
-            _best_effort_logout(driver, wait); return
-
-        _sleep(15)
-
-        # Paso 3b: Bloque de 'Supervisa el posicionamiento de la palabra clave.'
-        print("\n   -> 🔍 Esperando el bloque de 'Supervisa el posicionamiento...'")
-        pos_block = (By.XPATH, '//div[@data-path="position_tracking"]//span[text()="Supervisa el posicionamiento de la palabra clave."]')
-        if not _wait_visible(wait, driver, pos_block, "bloque 'Supervisa el posicionamiento...'"):
-            _best_effort_logout(driver, wait); return
-        print("   -> ✅ Bloque de posicionamiento encontrado.")
-
-        # Paso 3c: Botón "Configurar" dentro de ese bloque
-        print("\n   -> 🛠️  Buscando el botón 'Configurar' dentro del bloque...")
-        if not _wait_and_click(
-            wait, driver,
-            (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'),
-            "botón Configurar (position_tracking)"
-        ):
-            _best_effort_logout(driver, wait); return
-        _sleep(10)  # Espera para que cargue el formulario de configuración
-
-        # Paso 3d: Escribir la ciudad en el campo de ubicación y seleccionar la primera sugerencia
-        print("\n   -> 🗺️  Rellenando la ubicación (city) y seleccionando la primera sugerencia...")
-        loc_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Introduce país, ciudad, calle o código postal"]')
-        el_loc = _wait_clickable(wait, driver, loc_input, "input ubicación")
-        if el_loc is None:
-            _best_effort_logout(driver, wait); return
-
-        try:
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el_loc)
-        except Exception:
-            pass
-
-        try:
-            el_loc.click(); _sleep(1)
-            try:
-                el_loc.clear()
-            except Exception:
-                el_loc.send_keys(Keys.CONTROL, 'a'); _sleep(0.1); el_loc.send_keys(Keys.DELETE); _sleep(0.1)
-            el_loc.send_keys(city)
-            _sleep(5)  # espera para que carguen sugerencias
-            _press_first_suggestion(el_loc, "input ubicación")
-        except Exception as e:
-            print(f"      -> ⚠️ No se pudo completar la ubicación: {e}")
-            _best_effort_logout(driver, wait); return
-        _sleep(5)
-
-        # Paso 3e: Rellenar el nombre del negocio usando el name de la campaña
-        print("\n   -> 🏷️  Rellenando el nombre del negocio desde public.campaigns.name...")
-        biz_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Incluye el nombre del negocio completo"]')
-        try:
-            campaign_name = campaign.name if hasattr(campaign, "name") and campaign.name else str(id_campaign)
-        except Exception:
-            campaign_name = str(id_campaign)
-        if not _send_text_to_input(wait, driver, biz_input, campaign_name, "input nombre negocio", clear_first=True):
-            _best_effort_logout(driver, wait); return
-        print(f"   -> ✅ Nombre del negocio establecido: '{campaign_name}'.")
-
-        # Paso 3f: Esperar 5s y continuar a "Palabras clave"
-        print("\n   -> ⏳ Esperando 5 segundos antes de continuar...")
-        _sleep(5)
-
-        print("   -> 🡆 Buscando y haciendo clic en 'Continuar a Palabras clave'...")
-        if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-next-step-button"), "Continuar a Palabras clave (ID)"):
-            if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Continuar a Palabras clave"]]'),
-                                   "Continuar a Palabras clave (texto)"):
-                _best_effort_logout(driver, wait); return
-        print("   -> ✅ Avanzaste a 'Palabras clave'.")
-        # --- NUEVA PAUSA AÑADIDA ---
-        print("   -> ⏳ Dando tiempo extra para que la sección de palabras clave cargue...")
-        _sleep(8)
-        # ---------------------------
-
-        # Paso 3g: Obtener frases desde Google Drive para esta campaña/ciudad
-        print("\n   -> 🔎 Obteniendo frases de Drive para la ciudad y campaña dadas...")
-        phrases: list[str] = []
+    cities_to_try = all_cities_for_campaign
+    if not cities_to_try:
         try:
             drive = build_drive_client(credentials_json_path="credentials.json", token_json_path="token.json")
-            phrases = get_campaign_phrases_by_city(drive, id_campaign, city) or []
-            # Limpieza rápida: quitar vacíos y duplicados, conservar orden
-            seen = set()
-            phrases = [p.strip() for p in phrases if p and p.strip() and not (p.strip() in seen or seen.add(p.strip()))]
-            print(f"   -> ✅ Frases obtenidas: {len(phrases)}")
-        except FileNotFoundError as e:
-            print(f"   -> 🚨 No se encontró el archivo de credenciales/tokens de Google: {e}")
-        except ImportError as e:
-            print(f"   -> 🚨 Dependencia faltante (openpyxl). Instala con: pip install openpyxl. Detalle: {e}")
+            cities_to_try = get_campaign_cities(drive, id_campaign) or []
+            if not cities_to_try: print(f"   -> ❌ No se encontraron ciudades para la campaña {id_campaign}."); return "DRIVE_ERROR"
         except Exception as e:
-            print(f"   -> 🚨 Error al obtener frases desde Drive: {e}")
+            print(f"   -> 🚨 Error obteniendo datos de Drive: {e}."); return "DRIVE_ERROR"
+    
+    for city_candidate in cities_to_try:
+        browser_manager = None
+        driver = None
+        try:
+            print(f"\n--- 🔄 Probando con la ciudad: '{city_candidate}' ---")
+            
+            drive = build_drive_client()
+            phrases = get_campaign_phrases_by_city(drive, id_campaign, city_candidate) or []
+            phrases = list(dict.fromkeys(p.strip() for p in phrases if p and p.strip())) # Limpiar y eliminar duplicados
+            if not phrases:
+                print("      -> Sin frases disponibles. Saltando a la siguiente ciudad.")
+                continue
 
-        if not phrases:
-            print("   -> ⚠️ No se encontraron frases para esta ciudad/campaña.")
+            proxy_manager = ProxyManager()
+            proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
+            browser_manager = BrowserManagerProxy(chrome_path=r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", user_data_dir=os.path.join(os.getcwd(), "chrome_dev_session"), port="", proxy=proxy_config)
+            driver = browser_manager.get_configured_driver("https://es.semrush.com/login/")
+            if not driver: continue
+            
+            wait = WebDriverWait(driver, DEFAULT_STEP_TIMEOUT)
+            _sleep(20)
 
-        # Paso 3h: Pegar frases (separadas por comas) en el textarea de "Palabras clave"
-        print("\n   -> 📝 Pegando frases en el textarea de 'Palabras clave'...")
-        # --- PAUSA AÑADIDA (AUMENTADA) ---
-        _sleep(5)
-        # ---------------------------------
+            if not _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="email"]'), email, "input email", clear_first=False) or \
+               not _send_text_to_input(wait, driver, (By.CSS_SELECTOR, 'input[name="password"]'), password, "input password", clear_first=False) or \
+               not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar sesión"]]'), "botón Iniciar sesión"):
+                raise Exception("Fallo en el login inicial")
 
-        def _sanitize_phrase(s):
-            s = str(s).strip()
-            if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
-                s = s[1:-1].strip()
-            return s
-
-        phrases_csv = ", ".join([_sanitize_phrase(p) for p in (phrases or []) if str(p).strip()])
-
-        if phrases_csv:
-            ta_locator = (By.XPATH, '//textarea[@data-ui-name="Textarea" and contains(@placeholder, "keyword1")]')
-            if _wait_visible(wait, driver, ta_locator, "textarea Palabras clave"):
-                ta = _wait_clickable(wait, driver, ta_locator, "textarea Palabras clave")
-                if ta:
+            web_input_sel = (By.CSS_SELECTOR, 'input[data-ui-name="Input.Value"][placeholder="Indica el nombre de tu sitio web"]')
+            if not _wait_visible(wait, driver, web_input_sel, "input web", timeout=15):
+                if not _handle_existing_project(driver, wait):
+                    print("   -> 🛑 La cuenta está en un estado configurado no estándar. No se puede proceder.")
+                    print("      -> Marcando la cuenta en la BD para evitar futuros intentos.")
+                    db = next(get_db())
                     try:
-                        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", ta)
-                        _sleep(0.2)
-                    except Exception:
-                        pass
-                    try:
-                        ta.click(); _sleep(0.2)
-                        try:
-                            ta.clear()
-                        except Exception:
-                            ta.send_keys(Keys.CONTROL, 'a'); _sleep(0.1)
-                            ta.send_keys(Keys.DELETE); _sleep(0.1)
-                        ta.send_keys(phrases_csv)
-                        print("   -> ✅ Frases pegadas en el textarea de 'Palabras clave'.")
-                    except Exception as e:
-                        print(f"   -> ⚠️ No se pudieron pegar las frases: {e}")
-        else:
-            print("   -> ⚠️ No hay frases para pegar (lista vacía). Se continúa sin pegar.")
-
-        # Paso 3i: Clic en "Iniciar rastreo"
-        print("\n   -> ▶️ Iniciando rastreo (clic en 'Iniciar rastreo')...")
-        # --- NUEVA PAUSA AÑADIDA ---
-        _sleep(5)
-        # ---------------------------
-        if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo (ID)"):
-            if not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar rastreo"]]'),
-                                   "Iniciar rastreo (texto)"):
-                _best_effort_logout(driver, wait); return
-        _sleep(5)
-
-        # <--- INICIO: NUEVO BLOQUE PARA MANEJAR ERROR "ALGO SALIÓ MAL" --->
-        print("\n   -> 🔄 Verificando si apareció un error para reintentar...")
-        retry_button_locator = (By.XPATH, '//button[.//span[text()="Inténtalo de nuevo"]]')
-        # Usamos un timeout más corto para no demorar el flujo si no hay error.
-        short_wait = WebDriverWait(driver, 8) 
-        if _wait_and_click(short_wait, driver, retry_button_locator, "botón 'Inténtalo de nuevo'", retries=1):
-            print("      -> ✅ Error detectado y se hizo clic en reintentar. Esperando 15 segundos...")
+                        cred_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
+                        if cred_to_update:
+                            cred_to_update.id_campaigns = id_campaign
+                            cred_to_update.note = "Configuración preexistente no estándar"
+                            db.commit()
+                    finally:
+                        db.close()
+                    return "PRECONFIGURED_STATE"
+                
+                if not _wait_visible(wait, driver, web_input_sel, "input web (tras limpieza)"):
+                    raise Exception("El input para crear proyecto no apareció después de eliminar el anterior.")
+            
+            if not _send_text_to_input(wait, driver, web_input_sel, web_url, "input web") or \
+               not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Empieza ahora"]]'), "botón Empieza ahora"):
+                raise Exception("Fallo en la creación inicial del proyecto")
             _sleep(15)
-        else:
-            print("      -> No se encontró el botón de reintento (comportamiento normal).")
-        # <--- FIN: NUEVO BLOQUE --->
 
-        # Paso 4: SOLO SI TODO LO ANTERIOR ES CORRECTO, actualizar la BD
-        print("\n   -> 💾 Proceso de automatización exitoso. Actualizando la base de datos...")
-        db = next(get_db())
-        try:
-            credential_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_to_use.id).first()
-            if credential_to_update:
-                credential_to_update.id_campaigns = id_campaign
-                db.commit()
-                print("   -> ✅ ¡Base de datos actualizada! La campaña ha sido asignada a la credencial.")
-            else:
-                print("   -> 🚨 ERROR: No se encontró la credencial para actualizar al final del proceso.")
-        except Exception as db_error:
-            print(f"   -> 🚨 ERROR al actualizar la base de datos al final: {db_error}")
-            db.rollback()
+            if not _wait_visible(wait, driver, (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]'), "bloque tracking") or \
+               not _wait_and_click(wait, driver, (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'), "botón Configurar"):
+                raise Exception("Fallo navegando a la configuración de tracking")
+            _sleep(10)
+            
+            loc_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Introduce país, ciudad, calle o código postal"]')
+            el_loc = _wait_clickable(wait, driver, loc_input, "input ubicación")
+            if not el_loc: raise Exception("No se encontró el input de ubicación")
+            
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el_loc)
+            el_loc.click(); _sleep(1); el_loc.send_keys(Keys.CONTROL, 'a'); _sleep(0.1); el_loc.send_keys(Keys.DELETE); _sleep(0.1)
+            el_loc.send_keys(city_candidate)
+            _sleep(5); _press_first_suggestion(el_loc, "input ubicación"); _sleep(2)
+
+            if _check_for_location_error(driver):
+                print(f"      -> Ciudad '{city_candidate}' rechazada. Probando la siguiente."); continue
+            
+            print(f"   -> ✅ Ubicación '{city_candidate}' aceptada.")
+            city_to_use, phrases_to_use = city_candidate, phrases
+
+            biz_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Incluye el nombre del negocio completo"]')
+            campaign_name = campaign.name or str(id_campaign)
+            if not _send_text_to_input(wait, driver, biz_input, campaign_name, "input nombre negocio", clear_first=True) or \
+               not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-next-step-button"), "Continuar a Palabras clave"):
+                raise Exception("Fallo rellenando nombre de negocio")
+            _sleep(8)
+            
+            phrases_csv = ", ".join(phrases_to_use)
+            if phrases_csv: _send_text_to_input(wait, driver, (By.XPATH, '//textarea[@data-ui-name="Textarea" and contains(@placeholder, "keyword1")]'), phrases_csv, "textarea keywords", clear_first=True)
+            
+            _sleep(5)
+            if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo"):
+                raise Exception("Fallo al iniciar rastreo")
+            
+            db = next(get_db())
+            try:
+                credential_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
+                if credential_to_update:
+                    credential_to_update.id_campaigns = id_campaign
+                    credential_to_update.note = city_to_use
+                    db.commit()
+                    print(f"\n   -> ✅ ¡ÉXITO! BD actualizada. Campaña {id_campaign} y ciudad '{city_to_use}' asignadas a credencial {credential_id}.")
+            finally:
+                db.close()
+
+            print("\n   -> 🎉 ¡Configuración completada!")
+            _sleep(240)
+            _best_effort_logout(driver, wait)
+            return "SUCCESS"
+
+        except Exception as e:
+            print(f"      -> 🚨 Error en el intento con '{city_candidate}': {e}.")
         finally:
-            db.close()
-
-        print("\n   -> 🎉 ¡Configuración completada!")
-        _sleep(240)
-        _best_effort_logout(driver, wait)
-
-    except Exception as e:
-        print(f"\n🚨 ERROR FATAL durante el flujo de configuración: {e}")
-        traceback.print_exc()
-        print("   -> ❌ Como el proceso falló, NO se ha realizado ninguna modificación en la base de datos.")
-    finally:
-        try:
-            if driver:
-                # Logout FINAL como último paso antes de cerrar
-                print("🔐 Intentando logout FINAL (último paso) antes de cerrar el navegador…")
-                try:
-                    _open_home(driver)
-                except Exception:
-                    pass
-                try:
-                    _perform_logout(driver, WebDriverWait(driver, 20))
-                except Exception as e:
-                    print(f"⚠️ Error intentando logout final: {e}")
-        finally:
-            if browser_manager:
-                browser_manager.quit_driver()
-        print("\n" + "="*60)
-        print("✅ SERVICIO FINALIZADO: Flujo de configuración de cuenta Semrush.")
-        print("="*60 + "\n")
+            if browser_manager: browser_manager.quit_driver()
+    
+    print(f"\n   -> 🛑 AGOTADO: Ninguna de las ciudades probadas para la campaña {id_campaign} fue válida.")
+    return "ALL_CITIES_FAILED"
 
 
 def _get_free_credential_ids() -> Set[int]:
@@ -939,148 +794,61 @@ def run_semrush_cycle_config_accounts(
     max_total_iterations: Optional[int] = None
 ) -> None:
     """
-    Ciclo maestro:
-    - Mientras haya credenciales libres (id_campaigns NULL),
-      recorre campañas accesibles en Drive (orden aleatorio) y sus ciudades (orden aleatorio).
-    - Para cada (campaña, ciudad) con frases disponibles:
-        * Llama a run_semrush_config_account_flow(campaign_id, city)
-        * Si el flujo falla, lo reporta y continúa con el siguiente.
-        * Detecta la credencial asignada y actualiza 'note' = ciudad usada.
-    - Se detiene cuando:
-        * No quedan credenciales libres, o
-        * Se agotan todas las combinaciones útiles (campaña con al menos una ciudad con frases).
-    - delay_seconds: espera entre iteraciones para estabilidad de UI.
-    - max_total_iterations: tope de seguridad (None = sin tope).
+    Ciclo maestro que orquesta la configuración, ahora pasando la lista de ciudades
+    a la función de configuración para que pueda iterar internamente.
     """
-    print("\n" + "="*72)
-    print("🧭 INICIANDO CICLO MAESTRO: configurar cuentas por campaña → ciudades")
-    print("="*72)
-
-    # --- Inicialización de contadores ---
-    successful_configurations = 0
-    failed_configurations = 0
-    # ------------------------------------
-
-    # 0) Estado inicial: hay credenciales libres?
-    free_ids = _get_free_credential_ids()
-    if not free_ids:
-        print("   -> ⚠️ No hay credenciales libres (id_campaigns NULL). Nada por hacer.")
-        print("="*72 + "\n")
-        return
-
-    # 1) Cliente Drive y campañas accesibles (por carpeta mapeada y permisos)
+    print("\n" + "="*72 + "\n🧭 INICIANDO CICLO MAESTRO\n" + "="*72)
+    successful_configurations, failed_configurations, iter_count = 0, 0, 0
+    
     try:
-        drive = build_drive_client(credentials_json_path="credentials.json", token_json_path="token.json")
+        drive = build_drive_client()
+        all_campaign_ids = _campaigns_in_db(list_accessible_campaign_ids(drive))
+        random.shuffle(all_campaign_ids)
     except Exception as e:
-        print(f"   -> 🚨 No se pudo crear cliente de Drive: {e}")
-        print("   -> ❌ Abortando ciclo maestro.")
-        print("="*72 + "\n")
-        return
+        print(f"   -> 🚨 No se pudo conectar a Drive o a la BD para obtener campañas: {e}"); return
 
-    try:
-        accessible = list_accessible_campaign_ids(drive)  # por mapa y acceso
-    except Exception as e:
-        print(f"   -> 🚨 No se pudieron listar campañas accesibles en Drive: {e}")
-        accessible = []
+    while True:
+        if max_total_iterations is not None and iter_count >= max_total_iterations:
+            print("   -> ⛔ Tope de iteraciones alcanzado."); break
 
-    # Filtra a campañas que existen en tu tabla Campaign y ordena asc
-    campaign_queue = _campaigns_in_db(accessible)
-    random.shuffle(campaign_queue)
-    print(f"   -> 🎲 Se procesarán {len(campaign_queue)} campañas en orden aleatorio.")
-
-    if not campaign_queue:
-        print("   -> ⚠️ No hay campañas accesibles (Drive) que existan en BD. Nada por hacer.")
-        print("="*72 + "\n")
-        return
-
-    iter_count = 0
-
-    # 2) Bucle principal
-    for campaign_id in campaign_queue:
-        # Re-evaluar credenciales libres al inicio de cada campaña
-        free_ids = _get_free_credential_ids()
-        if not free_ids:
-            print("   -> ✅ No quedan credenciales libres. Ciclo maestro finalizado.")
-            break
-
-        # Ciudades de la campaña
-        try:
-            cities = get_campaign_cities(drive, campaign_id) or []
-            random.shuffle(cities)
-        except Exception as e:
-            print(f"   -> ⚠️ No se pudieron obtener ciudades para campaña {campaign_id}: {e}")
-            continue
-
-        if not cities:
-            print(f"   -> ⚠️ Campaña {campaign_id} no tiene ciudades disponibles. Se omite.")
-            continue
-
-        print(f"\n— Campaña #{campaign_id}: {len(cities)} ciudades candidatas (en orden aleatorio) —")
-
-        for city in cities:
-            # Tope de seguridad
-            if max_total_iterations is not None and iter_count >= max_total_iterations:
-                print("   -> ⛔ Tope de iteraciones alcanzado. Salida segura.")
-                break
-
-            # ¿Aún hay credenciales libres?
-            free_ids = _get_free_credential_ids()
-            if not free_ids:
-                print("   -> ✅ No quedan credenciales libres. Ciclo maestro finalizado.")
-                break # Sale del bucle de ciudades
-
-            # ¿Hay frases para esta ciudad?
-            try:
-                phrases = get_campaign_phrases_by_city(drive, campaign_id, city) or []
-                # limpieza ligera similar a tu uso
-                seen = set()
-                phrases = [p.strip() for p in phrases if p and p.strip() and not (p.strip() in seen or seen.add(p.strip()))]
-            except Exception as e:
-                print(f"   -> ⚠️ Error obteniendo frases para {city} (campaña {campaign_id}): {e}")
-                continue
-
-            if not phrases:
-                print(f"   -> (sin frases) {city} @ campaña {campaign_id} → se omite.")
-                continue
-
-            iter_count += 1
-            print(f"\n▶️  Iniciando Ciclo de Configuración #{iter_count}: Campaña {campaign_id} · Ciudad '{city}' · {len(phrases)} frases")
-            pre_free = set(free_ids)  # snapshot para detectar cuál credencial se asigna
-
-            # Ejecuta TU flujo existente (no se modifica su código)
-            try:
-                run_semrush_config_account_flow(campaign_id, city, cycle_number=iter_count)
-            except Exception as e:
-                print(f"   -> 🚨 ERROR INESPERADO en el flujo para Campaña {campaign_id}, Ciudad '{city}'.")
-                print(f"   ->    Error: {e}")
-                print(f"   -> ⏭️  Continuando con la siguiente iteración del ciclo...")
-                traceback.print_exc()
-                failed_configurations += 1
-                continue
-
-            # Detecta cuál credencial se asignó en esta iteración y actualiza 'note' = ciudad
-            assigned_id = _pick_newly_assigned_credential_id(campaign_id, pre_free)
-            if assigned_id:
-                _update_credential_note(assigned_id, city)
-                successful_configurations += 1
-            else:
-                print("   -> ⚠️ No se pudo identificar la credencial asignada para actualizar 'note'.")
-                failed_configurations += 1
-
-            if delay_seconds and delay_seconds > 0:
-                _sleep(delay_seconds)
+        free_credential_ids = list(_get_free_credential_ids())
+        if not free_credential_ids:
+            print("   -> ✅ No quedan credenciales libres. Ciclo finalizado."); break
         
-        # Si se agotaron las credenciales o se alcanzó el tope, salir del bucle principal de campañas
-        if not _get_free_credential_ids() or (max_total_iterations is not None and iter_count >= max_total_iterations):
-            break
+        if not all_campaign_ids:
+            print("   -> ⚠️ No quedan más campañas por procesar."); break
+            
+        campaign_id_to_process = all_campaign_ids.pop(0)
+        credential_id_to_process = random.choice(free_credential_ids)
+        iter_count += 1
+        
+        try:
+            cities_for_campaign = get_campaign_cities(drive, campaign_id_to_process) or []
+            if not cities_for_campaign:
+                print(f"   -> (sin ciudades) Campaña {campaign_id_to_process} se omite.")
+                continue
+        except Exception as e:
+            print(f"   -> ⚠️ No se pudieron obtener ciudades para campaña {campaign_id_to_process}: {e}"); continue
+        
+        print(f"\n▶️  Iniciando Ciclo de Configuración #{iter_count}: Campaña {campaign_id_to_process} en Credencial {credential_id_to_process}")
+        
+        result = run_semrush_config_account_flow(
+            credential_id=credential_id_to_process,
+            id_campaign=campaign_id_to_process,
+            all_cities_for_campaign=cities_for_campaign,
+            cycle_number=iter_count
+        )
+        
+        if result == "SUCCESS":
+            successful_configurations += 1
+        else:
+            failed_configurations += 1
 
-    # --- Impresión del resumen final ---
-    print("\n" + "="*72)
-    print("📊 RESUMEN DEL CICLO MAESTRO")
-    print("="*72)
+        if delay_seconds > 0:
+            _sleep(delay_seconds)
+
+    print("\n" + "="*72 + "\n📊 RESUMEN DEL CICLO MAESTRO\n" + "="*72)
     print(f"   -> ✅ Configuraciones Exitosas: {successful_configurations}")
-    print(f"   -> ❌ Configuraciones Fallidas: {failed_configurations}")
-    print(f"   -> 🔄 Total de Iteraciones: {iter_count}")
-    print("="*72)
-    print("✅ CICLO MAESTRO FINALIZADO: sin credenciales libres o sin más combinaciones útiles.")
-    print("="*72 + "\n")
+    print(f"   -> ❌ Configuraciones Fallidas (ninguna ciudad válida o error): {failed_configurations}")
+    print(f"   -> 🔄 Total de Credenciales Procesadas: {iter_count}")
+    print("="*72 + "\n✅ CICLO MAESTRO FINALIZADO.\n" + "="*72 + "\n")
