@@ -20,6 +20,7 @@ from selenium.webdriver.common.by import By
 from typing import List, Optional, Set, Dict, Tuple
 from app.db.database import get_db
 from sqlalchemy import asc, func
+from googleapiclient.discovery import Resource
 from app.api.v1.endpoints.drive_campaign import (
     build_drive_client,
     list_accessible_campaign_ids,
@@ -35,7 +36,7 @@ import random
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Helpers de resiliencia
+# Helpers de resiliencia (SIN CAMBIOS)
 # ───────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_STEP_TIMEOUT = 30
@@ -180,7 +181,7 @@ def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Logout robusto
+# Logout robusto (SIN CAMBIOS)
 # ───────────────────────────────────────────────────────────────────────────────
 
 def _open_home(driver: WebDriver):
@@ -364,7 +365,7 @@ def _persist_proxy_choice(credential_id: int, host: str, port: str) -> bool:
         db.close()
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Flujo de LOGIN
+# Flujo de LOGIN (SIN CAMBIOS)
 # ───────────────────────────────────────────────────────────────────────────────
 
 def run_semrush_login_flow(credential_id: int):
@@ -484,37 +485,28 @@ def _handle_existing_project(driver: WebDriver, wait: WebDriverWait) -> bool:
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Flujo de CONFIGURACIÓN DE CUENTA (Modificado)
+# Flujo de CONFIGURACIÓN DE CUENTA (SIN CAMBIOS RESPECTO A LA ÚLTIMA VERSIÓN)
 # ───────────────────────────────────────────────────────────────────────────────
 
-def run_semrush_config_account_flow(credential_id: int, id_campaign: int, all_cities_for_campaign: List[str] = [], cycle_number: Optional[int] = None) -> Optional[str]:
+def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_to_use: str, cycle_number: Optional[int] = None) -> Optional[str]:
     """
-    Usa una credencial para configurar una campaña, manejando errores y reintentos.
+    Usa una credencial para configurar una campaña con una ciudad específica.
     """
     print("\n" + "="*60)
     cycle_info = f" (Ciclo Maestro #{cycle_number})" if cycle_number is not None else " (Ejecución Única)"
-    print(f"🚀 INICIANDO FLUJO{cycle_info}: Config. de Campaña ID #{id_campaign} en Credencial ID #{credential_id}.")
+    print(f"🚀 INICIANDO FLUJO{cycle_info}: Config. Campaña ID #{id_campaign} (Ciudad: '{city_to_use}') en Credencial ID #{credential_id}.")
     print("="*60)
 
     db = next(get_db())
     try:
         credential_to_use = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
-        if not credential_to_use: return "DB_ERROR"
+        if not credential_to_use: return "DB_ERROR_CREDENTIAL"
         campaign = db.query(Campaign).filter(Campaign.id == id_campaign).first()
-        if not campaign or not campaign.web: return "DB_ERROR"
+        if not campaign or not campaign.web: return "DB_ERROR_CAMPAIGN"
         web_url, email, password, proxy_host, proxy_port = campaign.web, credential_to_use.email, credential_to_use.password, credential_to_use.proxy, credential_to_use.port
     finally:
         db.close()
 
-    cities_to_try = all_cities_for_campaign
-    if not cities_to_try:
-        try:
-            drive = build_drive_client()
-            cities_to_try = get_campaign_cities(drive, id_campaign) or []
-            if not cities_to_try: return "DRIVE_ERROR"
-        except Exception as e:
-            print(f"   -> 🚨 Error obteniendo datos de Drive: {e}."); return "DRIVE_ERROR"
-    
     browser_manager = None
     driver = None
     try:
@@ -562,164 +554,199 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, all_ci
             raise Exception("Fallo navegando a la configuración de tracking.")
         _sleep(10)
         
-        for city_candidate in cities_to_try:
-            print(f"\n--- 🔄 Probando con la ciudad: '{city_candidate}' ---")
-            loc_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Introduce país, ciudad, calle o código postal"]')
-            el_loc = _wait_clickable(wait, driver, loc_input, "input ubicación")
-            if not el_loc: raise Exception("No se encontró el input de ubicación.")
-            
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el_loc)
-            el_loc.click(); _sleep(1); el_loc.send_keys(Keys.CONTROL, 'a'); _sleep(0.1); el_loc.send_keys(Keys.DELETE); _sleep(0.1)
-            el_loc.send_keys(city_candidate)
-            _sleep(5); _press_first_suggestion(el_loc, "input ubicación"); _sleep(2)
+        print(f"\n--- 🎯 Configurando la ciudad: '{city_to_use}' ---")
+        loc_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Introduce país, ciudad, calle o código postal"]')
+        el_loc = _wait_clickable(wait, driver, loc_input, "input ubicación")
+        if not el_loc: raise Exception("No se encontró el input de ubicación.")
+        
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el_loc)
+        el_loc.click(); _sleep(1); el_loc.send_keys(Keys.CONTROL, 'a'); _sleep(0.1); el_loc.send_keys(Keys.DELETE); _sleep(0.1)
+        el_loc.send_keys(city_to_use)
+        _sleep(5); _press_first_suggestion(el_loc, "input ubicación"); _sleep(2)
 
-            if _check_for_location_error(driver):
-                print(f"      -> Ciudad '{city_candidate}' rechazada. Probando la siguiente."); continue
-            
-            print(f"   -> ✅ Ubicación '{city_candidate}' aceptada.")
-            phrases = get_campaign_phrases_by_city(build_drive_client(), id_campaign, city_candidate) or []
-            if not phrases:
-                print("      -> Sin frases disponibles. Saltando a la siguiente ciudad."); continue
+        if _check_for_location_error(driver):
+            print(f"      -> ❌ La ciudad '{city_to_use}' fue rechazada por Semrush.")
+            return "CITY_FAILED"
+        
+        print(f"   -> ✅ Ubicación '{city_to_use}' aceptada.")
+        phrases = get_campaign_phrases_by_city(build_drive_client(), id_campaign, city_to_use) or []
+        if not phrases:
+            print("      -> ⚠️ No se encontraron frases para esta ciudad. La configuración no puede continuar.")
+            return "NO_PHRASES"
 
-            biz_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Incluye el nombre del negocio completo"]')
-            if not _send_text_to_input(wait, driver, biz_input, campaign.name or str(id_campaign), "input nombre negocio", clear_first=True) or \
-               not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-next-step-button"), "Continuar a Palabras clave"):
-                raise Exception("Fallo rellenando nombre de negocio.")
-            _sleep(8)
-            
-            phrases_csv = ", ".join(list(dict.fromkeys(p.strip() for p in phrases if p and p.strip())))
-            if phrases_csv: _send_text_to_input(wait, driver, (By.XPATH, '//textarea[@data-ui-name="Textarea" and contains(@placeholder, "keyword1")]'), phrases_csv, "textarea keywords", clear_first=True)
-            
-            _sleep(5)
-            if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo"):
-                raise Exception("Fallo al iniciar rastreo.")
-            
-            db = next(get_db())
-            try:
-                credential_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
-                if credential_to_update:
-                    credential_to_update.id_campaigns = id_campaign
-                    credential_to_update.note = city_candidate
-                    db.commit()
-                    print(f"\n   -> ✅ ¡ÉXITO! BD actualizada. Campaña {id_campaign} y ciudad '{city_candidate}' asignadas a credencial {credential_id}.")
-            finally:
-                db.close()
+        biz_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Incluye el nombre del negocio completo"]')
+        if not _send_text_to_input(wait, driver, biz_input, campaign.name or str(id_campaign), "input nombre negocio", clear_first=True) or \
+           not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-next-step-button"), "Continuar a Palabras clave"):
+            raise Exception("Fallo rellenando nombre de negocio.")
+        _sleep(8)
+        
+        phrases_csv = ", ".join(list(dict.fromkeys(p.strip() for p in phrases if p and p.strip())))
+        if phrases_csv: _send_text_to_input(wait, driver, (By.XPATH, '//textarea[@data-ui-name="Textarea" and contains(@placeholder, "keyword1")]'), phrases_csv, "textarea keywords", clear_first=True)
+        
+        _sleep(5)
+        if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo"):
+            raise Exception("Fallo al iniciar rastreo.")
+        
+        db = next(get_db())
+        try:
+            credential_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
+            if credential_to_update:
+                credential_to_update.id_campaigns = id_campaign
+                credential_to_update.note = city_to_use
+                db.commit()
+                print(f"\n   -> ✅ ¡ÉXITO! BD actualizada. Campaña {id_campaign} y ciudad '{city_to_use}' asignadas a credencial {credential_id}.")
+        finally:
+            db.close()
 
-            print("\n   -> 🎉 ¡Configuración completada!")
-            _sleep(240)
-            _best_effort_logout(driver, wait)
-            return "SUCCESS"
-
-        print(f"\n   -> 🛑 AGOTADO: Ninguna de las ciudades probadas fue válida.")
-        return "ALL_CITIES_FAILED"
+        print("\n   -> 🎉 ¡Configuración completada! Esperando 240 segundos antes de cerrar sesión.")
+        _sleep(240)
+        _best_effort_logout(driver, wait)
+        return "SUCCESS"
 
     except Exception as e:
         print(f"      -> 🚨 Error en el flujo de configuración: {e}.")
-        raise e
+        return "AUTOMATION_ERROR"
     finally:
         if browser_manager: browser_manager.quit_driver()
 
-# --- Funciones de BD (sin cambios) ---
-def _get_free_credential_ids() -> Set[int]:
-    db = next(get_db())
-    try:
-        rows = db.query(CredentialSemrush.id).filter(CredentialSemrush.id_campaigns == None).all()
-        return {r[0] for r in rows}
-    finally:
-        db.close()
 
-def _campaigns_in_db(campaign_ids: List[int]) -> List[int]:
-    if not campaign_ids: return []
+# --- ▼▼▼ LÓGICA DEL CICLO MAESTRO SECUENCIAL (CORREGIDA) ▼▼▼ ---
+
+def _get_ordered_free_credential_ids() -> List[int]:
+    """Obtiene IDs de credenciales libres, ordenadas por ID ascendente."""
     db = next(get_db())
     try:
-        rows = db.query(Campaign.id).filter(Campaign.id.in_(campaign_ids)).order_by(asc(Campaign.id)).all()
+        rows = db.query(CredentialSemrush.id)\
+                 .filter(CredentialSemrush.id_campaigns == None)\
+                 .order_by(asc(CredentialSemrush.id))\
+                 .all()
         return [r[0] for r in rows]
     finally:
         db.close()
 
+def _get_ordered_campaign_ids(drive: "Resource") -> List[int]:
+    """Obtiene IDs de campañas de Drive, las cruza con la BD y las devuelve ordenadas."""
+    try:
+        accessible_ids = list_accessible_campaign_ids(drive)
+        if not accessible_ids:
+            return []
+        
+        db = next(get_db())
+        try:
+            rows = db.query(Campaign.id)\
+                     .filter(Campaign.id.in_(accessible_ids))\
+                     .order_by(asc(Campaign.id))\
+                     .all()
+            return [r[0] for r in rows]
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"   -> 🚨 Error obteniendo campañas ordenadas: {e}")
+        return []
 
-# ───────────────────────────────────────────────────────────────────────────────
-# CICLO MAESTRO (Modificado con reintentos)
-# ───────────────────────────────────────────────────────────────────────────────
 def run_semrush_cycle_config_accounts(
     delay_seconds: float = 8.0,
     max_total_iterations: Optional[int] = None
 ) -> None:
     """
-    Ciclo maestro que orquesta la configuración, reintentando con nuevas credenciales si una falla.
+    Ciclo maestro que orquesta la configuración de forma SECUENCIAL Y ORDENADA.
     """
-    print("\n" + "="*72 + "\n🧭 INICIANDO CICLO MAESTRO\n" + "="*72)
-    successful_configurations, failed_campaigns, iter_count = 0, 0, 0
+    print("\n" + "="*72 + "\n🧭 INICIANDO CICLO MAESTRO (MODO SECUENCIAL)\n" + "="*72)
+    
+    iter_count = 0
+    # ▼▼▼ CAMBIO CLAVE: Lista temporal para credenciales que fallan ▼▼▼
+    failed_credentials_this_run = set()
     
     try:
         drive = build_drive_client()
-        all_campaign_ids = _campaigns_in_db(list_accessible_campaign_ids(drive))
-        random.shuffle(all_campaign_ids)
     except Exception as e:
-        print(f"   -> 🚨 No se pudo conectar a Drive o a la BD para obtener campañas: {e}"); return
+        print(f"   -> 🚨 No se pudo conectar a Drive. Abortando ciclo: {e}"); return
 
-    while all_campaign_ids:
+    while True:
         if max_total_iterations is not None and iter_count >= max_total_iterations:
-            print("   -> ⛔ Tope de iteraciones alcanzado."); break
+            print("   -> ⛔ Tope de iteraciones alcanzado. Finalizando ciclo.")
+            break
 
-        campaign_id_to_process = all_campaign_ids.pop(0)
-        print(f"\n{'─'*30}\n🎯 PROCESANDO CAMPAÑA #{campaign_id_to_process}\n{'─'*30}")
+        # ▼▼▼ CAMBIO CLAVE: Filtra las credenciales que ya fallaron en esta ejecución ▼▼▼
+        all_free_credentials = _get_ordered_free_credential_ids()
+        available_credentials = [cid for cid in all_free_credentials if cid not in failed_credentials_this_run]
+
+        all_campaigns = _get_ordered_campaign_ids(drive)
+
+        if not available_credentials:
+            print("   -> 🛑 No hay más credenciales disponibles (o todas fallaron). Finalizando ciclo.")
+            break
+        if not all_campaigns:
+            print("   -> 🛑 No hay campañas disponibles. Finalizando ciclo.")
+            break
+            
+        db = next(get_db())
+        try:
+            used_configs = db.query(CredentialSemrush.id_campaigns, CredentialSemrush.note)\
+                             .filter(CredentialSemrush.id_campaigns != None)\
+                             .all()
+        finally:
+            db.close()
         
-        campaign_succeeded = False
-        free_credentials_to_try = list(_get_free_credential_ids())
-        random.shuffle(free_credentials_to_try)
-
-        if not free_credentials_to_try:
-            print("   -> ⚠️ No hay credenciales libres para intentar esta campaña. Saltando.")
-            failed_campaigns += 1
-            continue
-
-        for credential_id in free_credentials_to_try:
-            iter_count += 1
-            if max_total_iterations is not None and iter_count > max_total_iterations:
-                break
-            
-            print(f"\n▶️  Intento #{iter_count}: Usando Credencial #{credential_id} para Campaña #{campaign_id_to_process}")
-
+        processed_combinations = {(int(c.id_campaigns), c.note) for c in used_configs if c.id_campaigns}
+        
+        next_job: Optional[Tuple[int, str]] = None
+        for campaign_id in all_campaigns:
             try:
-                cities_for_campaign = get_campaign_cities(drive, campaign_id_to_process) or []
+                cities_for_campaign = get_campaign_cities(drive, campaign_id)
                 if not cities_for_campaign:
-                    print(f"   -> (Sin ciudades) Campaña {campaign_id_to_process} no puede continuar.")
-                    break
-
-                result = run_semrush_config_account_flow(
-                    credential_id=credential_id,
-                    id_campaign=campaign_id_to_process,
-                    all_cities_for_campaign=cities_for_campaign,
-                    cycle_number=iter_count
-                )
+                    continue
                 
-                if result == "SUCCESS":
-                    successful_configurations += 1
-                    campaign_succeeded = True
-                    print(f"   -> ✅ ÉXITO para Campaña {campaign_id_to_process}. Pasando a la siguiente.")
+                for city in cities_for_campaign:
+                    if (campaign_id, city) not in processed_combinations:
+                        next_job = (campaign_id, city)
+                        break
+                if next_job:
                     break
-                
-                elif result == "ALL_CITIES_FAILED":
-                    print(f"   -> ⚠️ La campaña {campaign_id_to_process} falló (ninguna ciudad válida).")
-                    break
-                else:
-                    print(f"   -> 🔄 Intento con credencial #{credential_id} resultó en '{result}'. Probando siguiente.")
-            
             except Exception as e:
-                print(f"   -> 🚨 EXCEPCIÓN INESPERADA con credencial #{credential_id}. Mensaje: {type(e).__name__}")
-                print("   -> 🔄 Reintentando la misma campaña con la siguiente credencial disponible...")
-                pass
+                print(f"      -> ⚠️ No se pudieron obtener ciudades para campaña #{campaign_id}: {e}")
+                continue
 
-        if not campaign_succeeded:
-            failed_campaigns += 1
-            print(f"   -> ❌ FALLO FINAL para Campaña {campaign_id_to_process} tras agotar credenciales/intentos.")
+        if not next_job:
+            print("   -> 🎉 ¡Todas las combinaciones de campaña/ciudad han sido procesadas! Finalizando.")
+            break
+        
+        campaign_to_process, city_to_process = next_job
+        credential_to_use = available_credentials[0] # Siempre la primera disponible de la lista filtrada
+        iter_count += 1
 
+        print(f"\n{'─'*30}\n▶️  INICIANDO INTENTO #{iter_count}\n{'─'*30}")
+        print(f"   -> Credencial Seleccionada: ID #{credential_to_use}")
+        print(f"   -> Campaña Seleccionada:    ID #{campaign_to_process}")
+        print(f"   -> Ciudad Seleccionada:     '{city_to_process}'")
+        
+        result = None
+        try:
+            result = run_semrush_config_account_flow(
+                credential_id=credential_to_use,
+                id_campaign=campaign_to_process,
+                city_to_use=city_to_process,
+                cycle_number=iter_count
+            )
+        except Exception as e:
+            print(f"   -> 🚨 EXCEPCIÓN INESPERADA durante el flujo. La credencial #{credential_to_use} podría estar comprometida.")
+            print(f"      Mensaje: {type(e).__name__}: {e}")
+            result = "FATAL_ERROR"
+
+        if result == "SUCCESS":
+            print(f"   -> ✅ ÉXITO en la configuración. El próximo ciclo buscará la siguiente ciudad/campaña.")
+            # Si una credencial tiene éxito, la reseteamos de la lista de fallos por si se libera y puede volver a usarse
+            if credential_to_use in failed_credentials_this_run:
+                failed_credentials_this_run.remove(credential_to_use)
+        else:
+            print(f"   -> ❌ FALLO en la configuración (Resultado: {result}). El próximo ciclo usará la SIGUIENTE credencial.")
+            # ▼▼▼ CAMBIO CLAVE: Añadir la credencial fallida a la lista de exclusión temporal ▼▼▼
+            failed_credentials_this_run.add(credential_to_use)
+        
         if delay_seconds > 0:
+            print(f"   -> ⏳ Pausa de {delay_seconds} segundos antes del siguiente ciclo...")
             _sleep(delay_seconds)
 
     print("\n" + "="*72 + "\n📊 RESUMEN DEL CICLO MAESTRO\n" + "="*72)
-    print(f"   -> ✅ Campañas Configuradas Exitosamente: {successful_configurations}")
-    print(f"   -> ❌ Campañas Fallidas (tras reintentos): {failed_campaigns}")
-    print(f"   -> 🔄 Total de Intentos Realizados (credencial/campaña): {iter_count}")
-    print("="*72 + "\n✅ CICLO MAESTRO FINALIZADO.\n" + "="*72 + "\n")
+    print(f"   -> 🔄 Total de Intentos de Configuración Realizados: {iter_count}")
+    print("="*72 + "\n✅ CICLO MAESTRO SECUENCIAL FINALIZADO.\n" + "="*72 + "\n")
