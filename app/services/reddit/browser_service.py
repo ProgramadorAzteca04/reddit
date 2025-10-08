@@ -161,6 +161,7 @@ class BrowserManagerProxy:
             print(f"   -> 🧅 Usando Proxy SOCKS5 (vía Selenium-Wire): {self.proxy['host']}:{self.proxy['port']}")
 
         chrome_options = wire_webdriver.ChromeOptions()
+        chrome_options.binary_location = self.chrome_path
         chrome_options.add_argument("--incognito")
         
         if self.user_agent:

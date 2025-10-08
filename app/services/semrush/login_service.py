@@ -387,7 +387,7 @@ def run_semrush_login_flow(credential_id: int):
     finally:
         db.close()
 
-    CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    BRAVE_PATH = r"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
     URL = "https://es.semrush.com/login/"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
     browser_manager = None
@@ -414,7 +414,7 @@ def run_semrush_login_flow(credential_id: int):
             else:
                 print("      -> ⚠️ No hay proxies disponibles. Se continuará SIN proxy.")
 
-        browser_manager = BrowserManagerProxy(chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="", proxy=proxy_config)
+        browser_manager = BrowserManagerProxy(chrome_path=BRAVE_PATH, user_data_dir=USER_DATA_DIR, port="", proxy=proxy_config)
         driver = browser_manager.get_configured_driver(URL)
         if not driver:
             print("   -> ❌ No se pudo iniciar el driver de Selenium-Wire.")
@@ -512,7 +512,8 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
     try:
         proxy_manager = ProxyManager()
         proxy_config = proxy_manager.get_proxy_by_host_port(proxy_host, proxy_port)
-        browser_manager = BrowserManagerProxy(chrome_path=r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", user_data_dir=os.path.join(os.getcwd(), "chrome_dev_session"), port="", proxy=proxy_config)
+        BRAVE_PATH = r"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+        browser_manager = BrowserManagerProxy(chrome_path=BRAVE_PATH, user_data_dir=os.path.join(os.getcwd(), "chrome_dev_session"), port="", proxy=proxy_config)
         driver = browser_manager.get_configured_driver("https://es.semrush.com/login/")
         if not driver: raise Exception("No se pudo iniciar el driver.")
         
@@ -608,9 +609,6 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
         return "AUTOMATION_ERROR"
     finally:
         if browser_manager: browser_manager.quit_driver()
-
-
-# --- ▼▼▼ LÓGICA DEL CICLO MAESTRO SECUENCIAL (CORREGIDA) ▼▼▼ ---
 
 def _get_ordered_free_credential_ids() -> List[int]:
     """Obtiene IDs de credenciales libres, ordenadas por ID ascendente."""
