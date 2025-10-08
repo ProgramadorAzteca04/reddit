@@ -246,7 +246,7 @@ def run_semrush_signup_flow():
     print("🚀 INICIANDO FLUJO: Registro en Semrush.")
     print("="*60)
 
-    CHROME_PATH = r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+    BRAVE_PATH = r"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
     URL = "https://es.semrush.com/signup/"
     USER_DATA_DIR = os.path.join(os.getcwd(), "chrome_dev_session")
 
@@ -265,7 +265,7 @@ def run_semrush_signup_flow():
             proxy_info = {"host": proxy.get("host"), "port": proxy.get("port")}
 
         browser_manager = BrowserManagerProxy(
-            chrome_path=CHROME_PATH, user_data_dir=USER_DATA_DIR, port="",
+            chrome_path=BRAVE_PATH, user_data_dir=USER_DATA_DIR, port="",
             proxy=proxy, user_agent=user_agent
         )
         driver = browser_manager.get_configured_driver(URL)
