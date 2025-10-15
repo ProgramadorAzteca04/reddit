@@ -551,6 +551,8 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
         _sleep(15)
         driver.get("https://es.semrush.com/projects/")
 
+        _sleep(30)
+
         if not _wait_visible(wait, driver, (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]'), "bloque tracking") or \
            not _wait_and_click(wait, driver, (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'), "botón Configurar"):
             raise Exception("Fallo navegando a la configuración de tracking.")
