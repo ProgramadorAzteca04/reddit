@@ -647,104 +647,104 @@ def run_semrush_cycle_config_accounts(
     max_total_iterations: Optional[int] = None
 ) -> None:
     """
-    Ciclo maestro que orquesta la configuración de forma SECUENCIAL Y ORDENADA.
+    Ciclo maestro que en CADA EJECUCIÓN comienza desde la primera campaña y ciudad,
+    ignorando el historial de la base de datos.
     """
-    print("\n" + "="*72 + "\n🧭 INICIANDO CICLO MAESTRO (MODO SECUENCIAL)\n" + "="*72)
-    
-    iter_count = 0
-    # ▼▼▼ CAMBIO CLAVE: Lista temporal para credenciales que fallan ▼▼▼
-    failed_credentials_this_run = set()
-    
+    print("\n" + "="*72 + "\n🧭 INICIANDO CICLO MAESTRO (MODO 'REINICIO TOTAL' EN CADA EJECUCIÓN)\n" + "="*72)
+
+    # --- 1. Inicialización ---
     try:
         drive = build_drive_client()
-    except Exception as e:
-        print(f"   -> 🚨 No se pudo conectar a Drive. Abortando ciclo: {e}"); return
-
-    while True:
-        if max_total_iterations is not None and iter_count >= max_total_iterations:
-            print("   -> ⛔ Tope de iteraciones alcanzado. Finalizando ciclo.")
-            break
-
-        # ▼▼▼ CAMBIO CLAVE: Filtra las credenciales que ya fallaron en esta ejecución ▼▼▼
-        all_free_credentials = _get_ordered_free_credential_ids()
-        available_credentials = [cid for cid in all_free_credentials if cid not in failed_credentials_this_run]
-
+        available_credentials = _get_ordered_free_credential_ids()
         all_campaigns = _get_ordered_campaign_ids(drive)
-
+        
         if not available_credentials:
-            print("   -> 🛑 No hay más credenciales disponibles (o todas fallaron). Finalizando ciclo.")
-            break
+            print("   -> 🛑 No hay credenciales libres. Finalizando.")
+            return
         if not all_campaigns:
-            print("   -> 🛑 No hay campañas disponibles. Finalizando ciclo.")
-            break
-            
-        db = next(get_db())
-        try:
-            used_configs = db.query(CredentialSemrush.id_campaigns, CredentialSemrush.note)\
-                             .filter(CredentialSemrush.id_campaigns != None)\
-                             .all()
-        finally:
-            db.close()
-        
-        processed_combinations = {(int(c.id_campaigns), c.note) for c in used_configs if c.id_campaigns}
-        
-        next_job: Optional[Tuple[int, str]] = None
+            print("   -> 🛑 No hay campañas accesibles. Finalizando.")
+            return
+
+        print(f"   -> ✅ Se encontraron {len(available_credentials)} credenciales libres y {len(all_campaigns)} campañas para procesar.")
+
+        # ▼▼▼ CAMBIO CLAVE ▼▼▼
+        # Se elimina la consulta a la base de datos por tareas ya procesadas.
+        # Ahora creamos la lista completa de tareas sin filtrar.
+        all_tasks = []
+        print("\n   -> 🔍 Construyendo la lista completa de tareas desde cero...")
         for campaign_id in all_campaigns:
             try:
                 cities_for_campaign = get_campaign_cities(drive, campaign_id)
-                if not cities_for_campaign:
-                    continue
-                
                 for city in cities_for_campaign:
-                    if (campaign_id, city) not in processed_combinations:
-                        next_job = (campaign_id, city)
-                        break
-                if next_job:
-                    break
+                    all_tasks.append((campaign_id, city))
             except Exception as e:
                 print(f"      -> ⚠️ No se pudieron obtener ciudades para campaña #{campaign_id}: {e}")
-                continue
-
-        if not next_job:
-            print("   -> 🎉 ¡Todas las combinaciones de campaña/ciudad han sido procesadas! Finalizando.")
-            break
         
-        campaign_to_process, city_to_process = next_job
-        credential_to_use = available_credentials[0] # Siempre la primera disponible de la lista filtrada
+        if not all_tasks:
+            print("   -> 🛑 No se encontraron tareas (ciudades) en ninguna campaña. Finalizando.")
+            return
+            
+        print(f"   -> ✅ Lista de {len(all_tasks)} tareas construida. El ciclo comenzará desde el principio.")
+
+    except Exception as e:
+        print(f"   -> 🚨 Error catastrófico durante la inicialización. Abortando ciclo: {e}")
+        traceback.print_exc()
+        return
+
+    # --- 2. Lógica de Ciclo con Iteradores ---
+    cred_idx = 0
+    task_idx = 0
+    iter_count = 0
+
+    while cred_idx < len(available_credentials) and task_idx < len(all_tasks):
         iter_count += 1
 
-        print(f"\n{'─'*30}\n▶️  INICIANDO INTENTO #{iter_count}\n{'─'*30}")
-        print(f"   -> Credencial Seleccionada: ID #{credential_to_use}")
-        print(f"   -> Campaña Seleccionada:    ID #{campaign_to_process}")
-        print(f"   -> Ciudad Seleccionada:     '{city_to_process}'")
+        if max_total_iterations is not None and iter_count > max_total_iterations:
+            print(f"\n   -> ⛔ Tope de {max_total_iterations} iteraciones alcanzado. Finalizando ciclo.")
+            break
         
+        current_credential_id = available_credentials[cred_idx]
+        current_campaign_id, current_city = all_tasks[task_idx]
+
+        print(f"\n{'─'*30}\n▶️  INICIANDO INTENTO #{iter_count}\n{'─'*30}")
+        print(f"   -> 👤 Usando Credencial: ID #{current_credential_id} ({cred_idx + 1}/{len(available_credentials)})")
+        print(f"   -> 🎯 Procesando Tarea:  Campaña #{current_campaign_id}, Ciudad '{current_city}' ({task_idx + 1}/{len(all_tasks)})")
+
         result = None
         try:
             result = run_semrush_config_account_flow(
-                credential_id=credential_to_use,
-                id_campaign=campaign_to_process,
-                city_to_use=city_to_process,
+                credential_id=current_credential_id,
+                id_campaign=current_campaign_id,
+                city_to_use=current_city,
                 cycle_number=iter_count
             )
         except Exception as e:
-            print(f"   -> 🚨 EXCEPCIÓN INESPERADA durante el flujo. La credencial #{credential_to_use} podría estar comprometida.")
-            print(f"      Mensaje: {type(e).__name__}: {e}")
+            print(f"   -> 🚨 EXCEPCIÓN INESPERADA: {type(e).__name__}: {e}")
             result = "FATAL_ERROR"
 
+        # Actualizar iteradores según el resultado
         if result == "SUCCESS":
-            print(f"   -> ✅ ÉXITO en la configuración. El próximo ciclo buscará la siguiente ciudad/campaña.")
-            # Si una credencial tiene éxito, la reseteamos de la lista de fallos por si se libera y puede volver a usarse
-            if credential_to_use in failed_credentials_this_run:
-                failed_credentials_this_run.remove(credential_to_use)
+            # Si tiene éxito, avanza solo a la siguiente tarea, manteniendo la credencial
+            print(f"   -> ✅ ÉXITO. La credencial #{current_credential_id} configuró '{current_city}'.")
+            print("      ->  Próxima iteración: Misma credencial, siguiente tarea.")
+            task_idx += 1
         else:
-            print(f"   -> ❌ FALLO en la configuración (Resultado: {result}). El próximo ciclo usará la SIGUIENTE credencial.")
-            # ▼▼▼ CAMBIO CLAVE: Añadir la credencial fallida a la lista de exclusión temporal ▼▼▼
-            failed_credentials_this_run.add(credential_to_use)
-        
-        if delay_seconds > 0:
-            print(f"   -> ⏳ Pausa de {delay_seconds} segundos antes del siguiente ciclo...")
-            _sleep(delay_seconds)
+            # Si falla, avanza tanto la credencial como la tarea
+            print(f"   -> ❌ FALLO (Resultado: {result}). La credencial #{current_credential_id} no pudo configurar '{current_city}'.")
+            print("      ->  Próxima iteración: Siguiente credencial, siguiente tarea.")
+            cred_idx += 1
+            task_idx += 1
 
+        # Pausa entre cada intento
+        if delay_seconds > 0 and (cred_idx < len(available_credentials) and task_idx < len(all_tasks)):
+             print(f"\n   -> ⏳ Pausa de {delay_seconds} segundos...")
+             _sleep(delay_seconds)
+
+    # --- 3. Finalización y Resumen ---
     print("\n" + "="*72 + "\n📊 RESUMEN DEL CICLO MAESTRO\n" + "="*72)
     print(f"   -> 🔄 Total de Intentos de Configuración Realizados: {iter_count}")
-    print("="*72 + "\n✅ CICLO MAESTRO SECUENCIAL FINALIZADO.\n" + "="*72 + "\n")
+    if cred_idx >= len(available_credentials):
+        print("   -> 🏁 Motivo de finalización: Se han agotado las credenciales libres.")
+    if task_idx >= len(all_tasks):
+        print("   -> 🏁 Motivo de finalización: Se han procesado todas las tareas disponibles.")
+    print("\n" + "="*72 + "\n✅ CICLO MAESTRO FINALIZADO.\n" + "="*72 + "\n")
