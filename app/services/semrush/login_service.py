@@ -815,6 +815,8 @@ def run_semrush_cycle_config_accounts(
     task_idx = 0
     iter_count = 0
 
+    credential_failure_counts = {} # Rastreador de fallos por ID de credencial
+
     while cred_idx < len(available_credentials) and task_idx < len(all_tasks):
         iter_count += 1
 
@@ -843,19 +845,32 @@ def run_semrush_cycle_config_accounts(
 
         # Actualizar iteradores según el resultado
         if result == "SUCCESS":
-            # ▼▼▼ LÓGICA CAMBIADA ▼▼▼
-            # Si tiene éxito, la credencial se considera "usada" y se avanza a la siguiente.
+            # Si tuvo éxito, reinicia el contador de fallos de esta credencial (si existía)
+            credential_failure_counts.pop(current_credential_id, None) 
+            
             print(f"   -> ✅ ÉXITO. La credencial #{current_credential_id} configuró '{current_city}'.")
             print("      ->  Próxima iteración: Siguiente credencial, siguiente tarea.")
-            cred_idx += 1  # <-- AVANZA LA CREDENCIAL
-            task_idx += 1  # <-- AVANZA LA TAREA
+            cred_idx += 1  # Avanza la credencial
+            task_idx += 1  # Avanza la tarea
+        
         else:
-            # ▼▼▼ LÓGICA CAMBIADA ▼▼▼
-            # Si falla, se mantiene la misma credencial pero se pasa a la siguiente tarea.
-            print(f"   -> ❌ FALLO (Resultado: {result}). La credencial #{current_credential_id} no pudo configurar '{current_city}'.")
-            print("      ->  Próxima iteración: Misma credencial, siguiente tarea.")
-            # cred_idx no se incrementa, se reutiliza la credencial
-            task_idx += 1  # <-- AVANZA SOLO LA TAREA
+            # Si falla, incrementa el contador de fallos de esta credencial
+            current_failures = credential_failure_counts.get(current_credential_id, 0) + 1
+            credential_failure_counts[current_credential_id] = current_failures
+            
+            print(f"   -> ❌ FALLO (Resultado: {result}). Credencial ID {current_credential_id} no pudo configurar '{current_city}'.")
+            print(f"   -> ⚠️ Conteo de fallos para Credencial ID {current_credential_id}: {current_failures} / 3.")
+
+            # Comprueba si la credencial ha superado el límite de fallos
+            if current_failures >= 3:
+                print(f"   -> 🛑 Límite de fallos alcanzado. Descartando credencial ID {current_credential_id}.")
+                print("      ->  Próxima iteración: Siguiente credencial, siguiente tarea.")
+                cred_idx += 1  # Avanza la credencial (la descarta)
+                task_idx += 1  # Avanza la tarea (la descarta)
+            else:
+                # Lógica original: la credencial aún tiene intentos, así que solo se salta la tarea
+                print("      ->  Próxima iteración: Misma credencial, siguiente tarea.")
+                task_idx += 1  # Avanza solo la tarea
 
         # Pausa entre cada intento
         if delay_seconds > 0 and (cred_idx < len(available_credentials) and task_idx < len(all_tasks)):
