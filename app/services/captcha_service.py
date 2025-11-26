@@ -369,10 +369,10 @@ def solve_recaptcha_in_iframes(driver,
                     inject_recaptcha_token_no_submit(driver, token)
                 try:
                     WebDriverWait(driver, 10).until_not(
-                        lambda d: d.find_elements(By.CSS_SELECTOR, "iframe[src*='api2/bframe' i], .sso-recaptcha-popup")
+                        lambda d: d.find_elements(By.CSS_SELECTOR, "iframe[src*='api2/bframe' i], .sso-recaptcha-popup, .sso-recaptcha-wrapper")
                     )
                 except TimeoutException:
-                    pass
+                    pass # El timeout aquí es esperado si la página simplemente no actualiza el DOM
                 return True
             print("      -> ❌ 2Captcha no devolvió token en este intento.")
             time.sleep(3)

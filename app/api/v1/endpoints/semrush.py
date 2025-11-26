@@ -37,7 +37,7 @@ async def start_semrush_signup_batch(request: BatchSignupRequest, background_tas
     Lanza en segundo plano un proceso que repetirá el registro en Semrush
     'times' veces de forma secuencial. Usa un delay opcional entre corridas.
     """
-    MAX_TIMES = 50
+    MAX_TIMES = 500
     if request.times > MAX_TIMES:
         raise HTTPException(status_code=400, detail=f"El máximo permitido es {MAX_TIMES} registros por petición.")
     print(f"🚀 Petición recibida para multi-registro: {request.times} vez/veces (delay={request.delay_seconds}s).")
