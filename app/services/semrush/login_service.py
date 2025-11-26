@@ -178,6 +178,69 @@ def _best_effort_logout(driver: "WebDriver", wait: "WebDriverWait"):
         _perform_logout(driver, wait)
     except Exception as e:
         print(f"   -> ⚠️ Logout best-effort falló: {e}")
+        
+def _wait_for_dashboard_and_print_progress(driver: WebDriver, wait: WebDriverWait, timeout: int = 240) -> bool:
+    """
+    Espera a que cargue el dashboard, imprimiendo el progreso del loader.
+    Es robusto contra selectores dinámicos al buscar por TEXTO visible.
+    """
+    print(f"\n   -> ⏳ Esperando la carga del dashboard (max {timeout}s)...")
+    
+    # --- Selectores robustos (basados en texto visible, no en clases) ---
+    
+    # 1. El elemento final que indica que el dashboard cargó (de tu código)
+    DASHBOARD_LOCATOR = (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]')
+    
+    # 2. Elementos que muestran el texto de progreso (buscamos "Recopilando" O un "%")
+    #    Esto es robusto porque no depende de 'class' o 'data-testid' dinámicos.
+    PROGRESS_TEXT_LOCATOR = (By.XPATH, 
+        '//div[contains(text(), "Recopilando")] | //div[contains(text(), "%")] | //span[contains(text(), "Recopilando")] | //span[contains(text(), "%")]'
+    )
+
+    start_time = time.time()
+    last_printed_progress = ""
+
+    while time.time() - start_time < timeout:
+        try:
+            # Primero, revisa si la página final ya cargó
+            if _wait_visible(wait, driver, DASHBOARD_LOCATOR, "Dashboard (Carga Final)", timeout=1):
+                print("\n   -> ✅ Dashboard de Rastreo de Posición cargado exitosamente.")
+                return True
+            
+            # Si no, busca el texto de progreso
+            progress_elements = driver.find_elements(*PROGRESS_TEXT_LOCATOR)
+            
+            if progress_elements:
+                # Tomamos el último texto encontrado, suele ser el más actualizado
+                current_progress = progress_elements[-1].text.strip()
+                
+                if current_progress and current_progress != last_printed_progress:
+                    # Imprime en la misma línea para una vista limpia
+                    print(f"\r   -> 🔄 Progreso detectado: {current_progress}...", end="", flush=True)
+                    last_printed_progress = current_progress
+            else:
+                # Si no hay texto de progreso, imprimimos un estado de espera genérico
+                if not last_printed_progress:
+                    print(f"\r   -> ⏳ Buscando estado de progreso...", end="", flush=True)
+
+        except (StaleElementReferenceException, WebDriverException):
+            # La página está cambiando (es normal durante la carga), solo continuamos
+            pass
+        except Exception as e:
+            # Otro error inesperado
+            print(f"\n      -> ⚠️ Error inesperado en el bucle de progreso: {e}")
+        
+        _sleep(2) # Pausa de 2 segundos entre cada verificación (polling)
+
+    # Si salimos del bucle por timeout
+    print(f"\n   -> ❌ Timeout. No se pudo verificar la carga del dashboard después de {timeout} segundos.")
+    
+    # Verificamos una última vez si el dashboard cargó justo al final
+    if _wait_visible(wait, driver, DASHBOARD_LOCATOR, "Dashboard (Verificación Final)", timeout=1):
+         print("   -> ✅ Dashboard cargado justo al finalizar el timeout.")
+         return True
+
+    return False
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -540,23 +603,62 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
            not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Iniciar sesión"]]'), "botón Iniciar sesión"):
             raise Exception("Fallo en el login inicial.")
 
-        web_input_sel = (By.CSS_SELECTOR, 'input[data-ui-name="Input.Value"][placeholder="Indica el nombre de tu sitio web"]')
-        if not _wait_visible(wait, driver, web_input_sel, "input web", timeout=15):
-            if not _handle_existing_project(driver, wait) or not _wait_visible(wait, driver, web_input_sel, "input web (tras limpieza)"):
-                raise Exception("Falló la eliminación del proyecto o el input no apareció después.")
-        
-        if not _send_text_to_input(wait, driver, web_input_sel, web_url, "input web") or \
-           not _wait_and_click(wait, driver, (By.XPATH, '//button[.//span[text()="Empieza ahora"]]'), "botón Empieza ahora"):
-            raise Exception("Fallo en la creación inicial del proyecto.")
         _sleep(15)
-        driver.get("https://es.semrush.com/projects/")
+        
+        print("\n   -> Navegando a Rastreo de Posición vía barra lateral...")
+        # Esperamos a que cargue la nueva página/dashboard después de "Empieza ahora"
+        _sleep(12) 
 
-        _sleep(30)
+        # 1. Clic en el icono de SEO en la barra lateral
+        # Usamos el 'ribbon-item-id' que es un identificador único.
+        seo_locator = (By.CSS_SELECTOR, 'srf-sidebar-ribbon-item[ribbon-item-id="toolkit_seo"]')
+        if not _wait_and_click(wait, driver, seo_locator, "Icono de barra lateral SEO", retries=3):
+            # Fallback por si la navegación directa a /projects/ era necesaria
+            print("      -> ⚠️ Falló el clic en el icono SEO. Intentando ruta de navegación anterior (vía /projects/)...")
+            driver.get("https://es.semrush.com/projects/")
+            _sleep(15)
+            if not _wait_visible(wait, driver, (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]'), "bloque tracking") or \
+               not _wait_and_click(wait, driver, (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'), "botón Configurar (Fallback)"):
+                raise Exception("Fallo al hacer clic en el icono de SEO y también en la ruta de navegación de fallback.")
+            _sleep(10)
+        else:
+            # Si el clic en SEO fue exitoso, esperamos y hacemos clic en el submenú
+            _sleep(2) # Esperar a que el submenú se cargue/expanda
 
-        if not _wait_visible(wait, driver, (By.XPATH, '//span[text()="Supervisa el posicionamiento de la palabra clave."]'), "bloque tracking") or \
-           not _wait_and_click(wait, driver, (By.XPATH, '//div[@data-path="position_tracking"]//button[.//div[text()="Configurar"]]'), "botón Configurar"):
-            raise Exception("Fallo navegando a la configuración de tracking.")
-        _sleep(10)
+            # 2. Clic en 'Rastreo de posición'
+            # Usamos el 'label' que es un identificador claro.
+            rastreo_locator = (By.CSS_SELECTOR, 'srf-sidebar-list-item[label="Rastreo de posición"]')
+            if not _wait_and_click(wait, driver, rastreo_locator, "Enlace de menú Rastreo de posición", retries=3):
+                raise Exception("Fallo al hacer clic en 'Rastreo de posición' en el menú.")
+            
+            # Esperamos a que la página de configuración de rastreo cargue
+            _sleep(12)
+            
+            print("\n   -> 🔍 Verificando pantalla intermedia de 'Configurar rastreo'...")
+        
+        # Usamos los selectores robustos data-test-id del HTML
+        domain_input_locator = (By.CSS_SELECTOR, 'div[data-test-id="ptr-landing-input-top-top"] input')
+        setup_tracking_button_locator = (By.CSS_SELECTOR, 'button[data-test-id="ptr-landing-button-setup-top"]')
+        
+        # Esperamos a que aparezca esta pantalla
+        if _wait_visible(wait, driver, domain_input_locator, "Input de dominio (intermedio)", timeout=10):
+            print("      -> ✅ Pantalla intermedia detectada. Rellenando dominio...")
+            
+            # 1. Se escribe la URL en "introduce el dominio"
+            if not _send_text_to_input(wait, driver, domain_input_locator, web_url, "Input de dominio (intermedio)", clear_first=True):
+                raise Exception("Fallo al escribir el dominio en la pantalla intermedia.")
+            
+            _sleep(1) # Pequeña pausa
+            
+            # 2. Se selecciona el botón "Configurar rastreo"
+            if not _wait_and_click(wait, driver, setup_tracking_button_locator, "Botón 'Configurar rastreo' (intermedio)"):
+                raise Exception("Fallo al hacer clic en 'Configurar rastreo' en la pantalla intermedia.")
+            
+            print("      -> ✅ Formulario intermedio enviado. Esperando página de configuración de ciudad...")
+            _sleep(10) # Espera a que cargue la siguiente página (la del mapa/ciudad)
+        
+        else:
+            print("      -> (No se detectó pantalla intermedia, se asume que ya estamos en la configuración de ciudad).")
         
         print(f"\n--- 🎯 Configurando la ciudad: '{city_to_use}' ---")
         loc_input = (By.XPATH, '//input[@data-ui-name="Input.Value" and @placeholder="Introduce país, ciudad, calle o código postal"]')
@@ -565,14 +667,16 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
         
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el_loc)
         el_loc.click(); _sleep(1); el_loc.send_keys(Keys.CONTROL, 'a'); _sleep(0.1); el_loc.send_keys(Keys.DELETE); _sleep(0.1)
+        _sleep(5)
         el_loc.send_keys(city_to_use)
+        _sleep(5)
         _sleep(5); _press_first_suggestion(el_loc, "input ubicación"); _sleep(2)
 
         if _check_for_location_error(driver):
             print(f"      -> ❌ La ciudad '{city_to_use}' fue rechazada por Semrush.")
             return "CITY_FAILED"
-        
         print(f"   -> ✅ Ubicación '{city_to_use}' aceptada.")
+        
         phrases = get_campaign_phrases_by_city(build_drive_client(), id_campaign, city_to_use) or []
         if not phrases:
             print("      -> ⚠️ No se encontraron frases para esta ciudad. La configuración no puede continuar.")
@@ -591,6 +695,18 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
         if not _wait_and_click(wait, driver, (By.ID, "ptr-wizard-apply-changes-button"), "Iniciar rastreo"):
             raise Exception("Fallo al iniciar rastreo.")
         
+        # --- INICIO DE LA MODIFICACIÓN ---
+        
+        # 9. LLAMAMOS AL NUEVO HELPER
+        # Esta función reemplaza al _sleep(240) y al _wait_visible(..., timeout=240)
+        if not _wait_for_dashboard_and_print_progress(driver, wait, timeout=240):
+            # Si la función devuelve False (timeout), lo registramos pero continuamos,
+            # ya que el proyecto probablemente SÍ se creó, solo que el dashboard no cargó.
+            print("\n      -> ⚠️ El dashboard no confirmó la carga, pero el proyecto debería estar creado.")
+
+        # --- FIN DE LA MODIFICACIÓN ---
+        
+        # 10. Actualizar la Base de Datos (esta lógica se mueve después de la espera)
         db = next(get_db())
         try:
             credential_to_update = db.query(CredentialSemrush).filter(CredentialSemrush.id == credential_id).first()
@@ -602,8 +718,8 @@ def run_semrush_config_account_flow(credential_id: int, id_campaign: int, city_t
         finally:
             db.close()
 
-        print("\n   -> 🎉 ¡Configuración completada! Esperando 240 segundos antes de cerrar sesión.")
-        _sleep(240)
+        print("\n   -> 🎉 ¡Configuración completada! Procediendo a cerrar sesión.")
+        # El _sleep(240) original ya no es necesario aquí.
         _best_effort_logout(driver, wait)
         return "SUCCESS"
 
@@ -727,16 +843,19 @@ def run_semrush_cycle_config_accounts(
 
         # Actualizar iteradores según el resultado
         if result == "SUCCESS":
-            # Si tiene éxito, avanza solo a la siguiente tarea, manteniendo la credencial
+            # ▼▼▼ LÓGICA CAMBIADA ▼▼▼
+            # Si tiene éxito, la credencial se considera "usada" y se avanza a la siguiente.
             print(f"   -> ✅ ÉXITO. La credencial #{current_credential_id} configuró '{current_city}'.")
-            print("      ->  Próxima iteración: Misma credencial, siguiente tarea.")
-            task_idx += 1
-        else:
-            # Si falla, avanza tanto la credencial como la tarea
-            print(f"   -> ❌ FALLO (Resultado: {result}). La credencial #{current_credential_id} no pudo configurar '{current_city}'.")
             print("      ->  Próxima iteración: Siguiente credencial, siguiente tarea.")
-            cred_idx += 1
-            task_idx += 1
+            cred_idx += 1  # <-- AVANZA LA CREDENCIAL
+            task_idx += 1  # <-- AVANZA LA TAREA
+        else:
+            # ▼▼▼ LÓGICA CAMBIADA ▼▼▼
+            # Si falla, se mantiene la misma credencial pero se pasa a la siguiente tarea.
+            print(f"   -> ❌ FALLO (Resultado: {result}). La credencial #{current_credential_id} no pudo configurar '{current_city}'.")
+            print("      ->  Próxima iteración: Misma credencial, siguiente tarea.")
+            # cred_idx no se incrementa, se reutiliza la credencial
+            task_idx += 1  # <-- AVANZA SOLO LA TAREA
 
         # Pausa entre cada intento
         if delay_seconds > 0 and (cred_idx < len(available_credentials) and task_idx < len(all_tasks)):
