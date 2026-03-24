@@ -1,11 +1,10 @@
 # app/api/v1/endpoints/semrush.py
 from typing import Optional
-
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from app.services.semrush.login_service import (
     run_semrush_config_account_flow,
     run_semrush_login_flow,
-    run_semrush_cycle_config_accounts,  # ⬅️ NUEVO: orquestador
+    run_semrush_cycle_config_accounts,
 )
 from app.services.semrush.registration_service import (
     run_semrush_signup_flow,
@@ -15,6 +14,10 @@ from app.schemas.semrush import (
     BatchSignupRequest,
     ConfigAccountRequest,
     SemrushLoginRequest,
+)
+from app.api.v1.endpoints.drive_campaign import (  # ⬅️ IMPORT AGREGADO
+    build_drive_client,
+    get_campaign_cities,
 )
 
 router = APIRouter()
@@ -61,16 +64,55 @@ async def config_account(request: ConfigAccountRequest, background_tasks: Backgr
     """
     Usa una credencial específica (por su ID) para configurar un proyecto de Semrush
     asociado a una campaña (por su ID).
+
+    - Si **city_to_use** no se envía o es inválida, se toma automáticamente
+      la primera ciudad disponible en Drive para esa campaña.
     """
-    print(f"🚀 Petición recibida para configurar la campaña ID {request.id_campaign} en la credencial ID {request.credential_id}.")
-    
-    background_tasks.add_task(
-        run_semrush_config_account_flow, 
-        credential_id=request.credential_id,
-        id_campaign=request.id_campaign
-    )
-    
-    return {"message": "El proceso de configuración de la cuenta ha comenzado en segundo plano."}
+    try:
+        city = request.city_to_use
+
+        # Sanitizar: rechazar valores vacíos, placeholder de Swagger, etc.
+        if not city or city.strip().lower() in ("string", "") or len(city.strip()) < 2:
+            city = None
+
+        if not city:
+            print(f"   -> 🔍 No se especificó ciudad válida. Buscando la primera disponible en Drive para campaña ID {request.id_campaign}...")
+            drive = build_drive_client()
+            cities = get_campaign_cities(drive, request.id_campaign)
+
+            if not cities:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No se encontraron ciudades para la campaña ID {request.id_campaign} en Drive."
+                )
+
+            city = cities[0].strip()
+            print(f"   -> ✅ Ciudad seleccionada automáticamente: '{city}'")
+
+        print(f"🚀 Petición recibida para configurar la campaña ID {request.id_campaign} en la credencial ID {request.credential_id}. Ciudad: '{city}'")
+
+        background_tasks.add_task(
+            run_semrush_config_account_flow,
+            credential_id=request.credential_id,
+            id_campaign=request.id_campaign,
+            city_to_use=city,
+        )
+
+        return {
+            "message": "El proceso de configuración de la cuenta ha comenzado en segundo plano.",
+            "details": {
+                "credential_id": request.credential_id,
+                "id_campaign": request.id_campaign,
+                "city_to_use": city,
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"   -> 🚨 Error inesperado al preparar la tarea: {e}")
+        raise HTTPException(status_code=500, detail=f"Error interno al preparar la configuración: {str(e)}")
+
 
 @router.post(
     "/config-account/cycle",
@@ -100,7 +142,6 @@ async def start_semrush_cycle(
             status_code=400,
             detail=f"max_total_iterations no puede exceder {MAX_CAP}.",
         )
-
     print(f"🧭 Petición recibida para ciclo maestro (delay={delay_seconds}s, max={max_total_iterations}).")
     background_tasks.add_task(
         run_semrush_cycle_config_accounts,
